@@ -126,6 +126,7 @@ def _make_mock_engine(cast: dict[str, CastMember]) -> MockModel:
             )
 
         # ── "look" / "alone" → Yuki enters, exits, then Sakura enters ──
+        # NOTE: no offer_choices — exercises the free-text fallback!
         elif "look" in choice_lower or "alone" in choice_lower:
             return (
                 f'[TOOL: enter_character character="{yuki}"]\n\n'
@@ -134,13 +135,11 @@ def _make_mock_engine(cast: dict[str, CastMember]) -> MockModel:
                 f'[{yuki}]: "I\'ve been thinking a lot lately. About everything, really."\n\n'
                 f'They stare out the window, their reflection overlapping with the clouds drifting past.\n\n'
                 f'[TOOL: exit_character character="{yuki}"]\n\n'
-                f'The door clicks shut. The room settles into silence, dust motes dancing in the slanted light. A notebook left behind on the desk, pages fluttering.\n\n'
-                f'Minutes pass. Then the door opens again.\n\n'
+                f'The door clicks shut. The room settles into silence, dust motes dancing in the slanted light.\n\n'
                 f'[TOOL: enter_character character="{sakura}"]\n\n'
                 f'[TOOL: set_expression character="{sakura}" expression="smile"]\n\n'
-                f'[{sakura}]: "Hey, I saw {yuki} heading to the roof. They looked kinda down — thought you should know."\n\n'
-                f'She leans against the doorframe, concern flickering behind her cheerful demeanour.\n\n'
-                f'[TOOL: offer_choices choices=\'[{{"id":"follow","text":"Go to the roof after them","consequence":"check on yuki"}},{{"id":"talk_sakura","text":"Stay and talk to Sakura instead","consequence":"talk with sakura"}},{{"id":"leave","text":"Head home — it\'s been a long day","consequence":"leave for the day"}}]\']'
+                f'[{sakura}]: "Hey. I saw {yuki} heading to the roof. They looked kinda down."\n\n'
+                f'She leans against the doorframe, concern flickering behind her cheerful demeanour. The silence stretches, waiting for you to fill it.'
             )
 
         # ── "confess" / "love" → Rooftop with interrupted confession ──
@@ -409,6 +408,31 @@ button {
 }
 button:hover { border-color: #e8a87c !important; color: #fff !important; }
 h1, h2, h3 { font-family: 'Georgia', serif !important; color: #e8a87c !important; }
+
+/* Free-text fallback input — VN themed */
+#free-input-row { margin-top: 4px; }
+#free-input textarea {
+    background: #1a1a3e !important;
+    border: 1px solid #3a3a5a !important;
+    color: #e0d5c8 !important;
+    font-family: 'Georgia', serif !important;
+    font-size: 0.9rem !important;
+    border-radius: 6px !important;
+}
+#free-input label { color: #8888aa !important; font-family: 'Georgia', serif !important; }
+#free-submit-btn button {
+    background: linear-gradient(180deg, #e8a87c 0%, #d4896a 100%) !important;
+    border: 1px solid #e8a87c !important;
+    color: #1a1a2e !important;
+    font-family: 'Georgia', serif !important;
+    font-weight: bold !important;
+    border-radius: 6px !important;
+    height: 100% !important;
+}
+#free-submit-btn button:hover {
+    background: linear-gradient(180deg, #f0b88c 0%, #e0987a 100%) !important;
+    border-color: #f0b88c !important;
+}
 """
 
 # Installed via launch(js=...) — gr.HTML strips <script> tags, so a page
@@ -516,6 +540,10 @@ document.addEventListener('click', function(e) {
         setVal('choice-id-box', id);
         setVal('choice-text-box', text);
 
+        // Clear free-text input when a normal choice is used
+        const freeInp = document.querySelector('#free-input textarea, #free-input input');
+        if (freeInp) { freeInp.value = ''; }
+
         setTimeout(() => clickHidden('#submit-choice-btn'), 150);
         return;
     }
@@ -554,6 +582,28 @@ document.addEventListener('keydown', function(e) {
     if (screen.getAttribute('data-more') === '1') {
         e.preventDefault();
         clickHidden('#advance-btn');
+    }
+});
+
+// Clear free-text input after submit — so Enter doesn't re-submit stale text
+document.addEventListener('click', function(e) {
+    const btn = e.target.closest('#free-submit-btn button, #free-submit-btn');
+    if (btn) {
+        setTimeout(function() {
+            const inp = document.querySelector('#free-input textarea, #free-input input');
+            if (inp) { inp.value = ''; }
+        }, 100);
+    }
+});
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        const active = document.activeElement;
+        if (active && active.closest && active.closest('#free-input')) {
+            setTimeout(function() {
+                const inp = document.querySelector('#free-input textarea, #free-input input');
+                if (inp) { inp.value = ''; }
+            }, 100);
+        }
     }
 });
 """
@@ -1147,6 +1197,17 @@ def create_ui():
             with gr.Column(scale=3):
                 vn_screen = gr.HTML(_vn_screen_html("", {}, [], {}))
 
+                # Free-text fallback: visible when model skips offer_choices
+                with gr.Row(visible=True, elem_id="free-input-row"):
+                    free_input = gr.Textbox(
+                        scale=4, lines=1, max_lines=3,
+                        placeholder="What do you do or say? (type anything when there are no choices)",
+                        label="✏️ Free Action",
+                        elem_id="free-input",
+                    )
+                    free_submit = gr.Button("Say / Act", scale=1,
+                                            variant="primary", elem_id="free-submit-btn")
+
                 voice_audio = gr.Audio(
                     value=None, autoplay=True, visible=True,
                     label="🔊 Voiced line", interactive=False,
@@ -1172,6 +1233,10 @@ def create_ui():
         # JS hook when there is more text to read this turn.
         advance_btn = gr.Button("Advance", visible="hidden",
                                 elem_id="advance-btn")
+
+        # Hidden state for free-text fallback choice id
+        free_choice_id = gr.Textbox(value="__free__", visible="hidden",
+                                    elem_id="free-choice-id")
 
         main_outputs = [scene_state, engine_ref, vn_screen, cast_data,
                         cast_panel, narration_log, scene_info,
@@ -1203,6 +1268,18 @@ def create_ui():
                        outputs=turn_outputs + [save_status])
 
         reset_btn.click(fn=on_reset, outputs=turn_outputs)
+
+        # ── Free-text fallback (when model skips offer_choices) ───
+        free_submit.click(
+            fn=on_choice,
+            inputs=[free_choice_id, free_input, scene_state, engine_ref, prev_bg_state],
+            outputs=turn_outputs,
+        )
+        free_input.submit(
+            fn=on_choice,
+            inputs=[free_choice_id, free_input, scene_state, engine_ref, prev_bg_state],
+            outputs=turn_outputs,
+        )
 
     return app
 
