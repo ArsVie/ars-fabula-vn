@@ -60,7 +60,7 @@ def scene(cast):
     from vn_contracts import SceneState
     return SceneState(
         cast=cast,
-        present=list(cast.keys()),
+        present=[],
         background="classroom",
         mood="peaceful",
         turn=0,

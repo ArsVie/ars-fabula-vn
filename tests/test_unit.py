@@ -38,10 +38,10 @@ class TestSceneState:
         assert not scene.has_affection("Haruki", "gave_gift")
 
     def test_present_characters(self, scene):
-        assert len(scene.present) >= 2
-        # All present characters should be in cast
-        for name in scene.present:
-            assert name in scene.cast
+        assert len(scene.present) == 0  # present starts empty; characters enter via tool
+        # Adding a character to present
+        scene.present.append("Yuki")
+        assert "Yuki" in scene.present
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -448,6 +448,88 @@ class TestExpressionState:
         scene.expressions["Yuki"] = "embarrassed"
         banner = build_state_banner(scene)
         assert "Yuki: embarrassed" in banner
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Engine: enter_character / exit_character tools
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestEnterExitCharacter:
+    def test_enter_character_adds_to_present(self, scene):
+        from vn_engine import _handle_enter_character
+        assert "Yuki" not in scene.present
+        result = _handle_enter_character(
+            {"tool": "enter_character", "character": "Yuki"}, scene, scene.cast)
+        assert result.success
+        assert "Yuki" in scene.present
+        assert result.data == {"character": "Yuki", "present": "enter"}
+
+    def test_enter_character_idempotent(self, scene):
+        from vn_engine import _handle_enter_character
+        scene.present.append("Yuki")
+        result = _handle_enter_character(
+            {"tool": "enter_character", "character": "Yuki"}, scene, scene.cast)
+        assert result.success
+        assert scene.present.count("Yuki") == 1  # no duplicate
+
+    def test_enter_character_cast_lock_violation(self, scene):
+        from vn_engine import _handle_enter_character
+        result = _handle_enter_character(
+            {"tool": "enter_character", "character": "Nobody"}, scene, scene.cast)
+        assert not result.success
+        assert "Cast-lock violation" in result.message
+
+    def test_exit_character_removes_from_present(self, scene):
+        from vn_engine import _handle_exit_character
+        scene.present.append("Yuki")
+        result = _handle_exit_character(
+            {"tool": "exit_character", "character": "Yuki"}, scene, scene.cast)
+        assert result.success
+        assert "Yuki" not in scene.present
+        assert result.data == {"character": "Yuki", "present": "exit"}
+
+    def test_exit_character_not_present_no_error(self, scene):
+        from vn_engine import _handle_exit_character
+        assert "Yuki" not in scene.present
+        result = _handle_exit_character(
+            {"tool": "exit_character", "character": "Yuki"}, scene, scene.cast)
+        assert result.success  # no-op, not an error
+
+    def test_exit_character_cast_lock_violation(self, scene):
+        from vn_engine import _handle_exit_character
+        result = _handle_exit_character(
+            {"tool": "exit_character", "character": "Nobody"}, scene, scene.cast)
+        assert not result.success
+        assert "Cast-lock violation" in result.message
+
+    def test_enter_character_routed(self, scene):
+        from vn_engine import _route_tool
+        result = _route_tool(
+            {"tool": "enter_character", "character": "Yuki"}, scene, scene.cast)
+        assert result.success
+        assert "Yuki" in scene.present
+
+    def test_exit_character_routed(self, scene):
+        from vn_engine import _route_tool
+        scene.present.append("Yuki")
+        result = _route_tool(
+            {"tool": "exit_character", "character": "Yuki"}, scene, scene.cast)
+        assert result.success
+        assert "Yuki" not in scene.present
+
+    def test_parse_enter_character(self):
+        from vn_engine import parse_tool_calls
+        calls = parse_tool_calls('[TOOL: enter_character character="Yuki"]')
+        assert len(calls) == 1
+        assert calls[0]["tool"] == "enter_character"
+        assert calls[0]["character"] == "Yuki"
+
+    def test_parse_exit_character(self):
+        from vn_engine import parse_tool_calls
+        calls = parse_tool_calls('[TOOL: exit_character character="Haruki"]')
+        assert len(calls) == 1
+        assert calls[0]["tool"] == "exit_character"
+        assert calls[0]["character"] == "Haruki"
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -53,7 +53,7 @@ def make_initial_scene(cast=None) -> SceneState:
         cast = DEFAULT_CAST
     return SceneState(
         cast=cast,
-        present=list(cast.keys()),
+        present=[],  # characters enter via enter_character as they appear
         background="classroom",
         mood="peaceful",
         turn=0,
@@ -98,6 +98,7 @@ def _make_mock_engine(cast: dict[str, CastMember]) -> MockModel:
         if "talk" in choice_lower or c1.lower() in choice_lower:
             expressions = ["surprised", "smile", "embarrassed"]
             return (
+                f"[TOOL: enter_character character=\"{c1}\"]\n\n"
                 f"[TOOL: set_expression character=\"{c1}\" expression=\"{expressions[0]}\"]\n\n"
                 f"[TOOL: advance_scene description=\"The afternoon sun filters through the classroom windows, casting warm rectangles of light across the wooden floor.\" background=\"classroom\" mood=\"cheerful\"]\n\n"
                 f"[TOOL: set_expression character=\"{c1}\" expression=\"{expressions[1]}\"]\n\n"
@@ -111,14 +112,18 @@ def _make_mock_engine(cast: dict[str, CastMember]) -> MockModel:
 
         elif "look" in choice_lower or "alone" in choice_lower:
             return (
+                f"[TOOL: enter_character character=\"{c1}\"]\n\n"
                 f"[TOOL: set_expression character=\"{c1}\" expression=\"sad\"]\n\n"
                 f"[TOOL: advance_scene description=\"The classroom feels emptier when it's just you. Through the window, you can see the courtyard where students are laughing, the sound muffled by glass.\" background=\"classroom\" mood=\"melancholic\"]\n\n"
                 f"Your eyes drift to {c1}'s desk. A notebook left behind, pages fluttering in the breeze from the open window.\n\n"
+                f"[TOOL: exit_character character=\"{c1}\"]\n\n"
+                f"The door clicks shut behind them. You're alone with the afternoon light.\n\n"
                 f"[TOOL: offer_choices choices='[{{\"id\":\"wait\",\"text\":\"Wait for them to come back\",\"consequence\":\"sit and wait\"}},{{\"id\":\"go_find\",\"text\":\"Go look for them\",\"consequence\":\"search the school\"}},{{\"id\":\"leave\",\"text\":\"Head home\",\"consequence\":\"leave for the day\"}}]']"
             )
 
         elif "confess" in choice_lower or "love" in choice_lower:
             return (
+                f"[TOOL: enter_character character=\"{c1}\"]\n\n"
                 f"[TOOL: set_expression character=\"{c1}\" expression=\"surprised\"]\n\n"
                 f"[TOOL: advance_scene description=\"Time seems to stop. The world narrows to just the two of you — the distant sounds of the school fading into nothing.\" background=\"rooftop\" mood=\"romantic\"]\n\n"
                 f"[TOOL: set_expression character=\"{c1}\" expression=\"embarrassed\"]\n\n"
@@ -131,6 +136,7 @@ def _make_mock_engine(cast: dict[str, CastMember]) -> MockModel:
 
         else:
             return (
+                f"[TOOL: enter_character character=\"{c1}\"]\n\n"
                 f"[TOOL: advance_scene description=\"The bell rings, signaling the end of another school day. Students begin packing their bags, the air filled with chatter and the shuffle of papers.\" background=\"classroom\" mood=\"peaceful\"]\n\n"
                 f"[TOOL: set_expression character=\"{c1}\" expression=\"smile\"]\n\n"
                 f"[{c1}]: \"Hey, you ready to head out? I was thinking we could grab something from the café near the station.\"\n\n"
@@ -246,6 +252,15 @@ CSS = """
 .vn-text { color: #e0d5c8; font-size: 1rem; line-height: 1.6; margin: 0; }
 .vn-text.narrator { font-style: italic; color: #b0a898; }
 
+/* Typewriter cursor — blinks while text is being revealed */
+.vn-text.typing::after {
+    content: '▌';
+    animation: vnBlink 0.7s step-end infinite;
+    color: #e8a87c;
+    margin-left: 1px;
+}
+@keyframes vnBlink { 50% { opacity: 0; } }
+
 /* Click-to-advance affordance: the whole screen is the "next" button while
    there are more beats to read; the ▼ blinks in the dialogue corner. */
 .vn-screen.advancing { cursor: pointer; }
@@ -359,6 +374,76 @@ h1, h2, h3 { font-family: 'Georgia', serif !important; color: #e8a87c !important
 # So it must be plain statements — an `() => {...}` arrow wrapper would just
 # be constructed and discarded, and the listener would never attach.
 ONLOAD_JS = """
+// ── Typewriter: reveals text char-by-char, two-stage click ─────
+const TYPING_SPEED = 35;  // ms per character
+let _typewriterTimer = null;
+
+function startTypewriter(screen) {
+    // Clear any running timer
+    if (_typewriterTimer) { clearInterval(_typewriterTimer); _typewriterTimer = null; }
+
+    const textEl = screen.querySelector('.vn-text');
+    if (!textEl) return;
+
+    const fullText = textEl.getAttribute('data-full-text') || textEl.textContent || '';
+    if (!fullText) return;
+    textEl.setAttribute('data-full-text', fullText);
+
+    // If reduced-motion, reveal instantly
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        textEl.textContent = fullText;
+        textEl.classList.remove('typing');
+        screen.setAttribute('data-typing', '0');
+        return;
+    }
+
+    let idx = 0;
+    textEl.textContent = '';
+    textEl.classList.add('typing');
+    screen.setAttribute('data-typing', '1');
+
+    _typewriterTimer = setInterval(function() {
+        idx++;
+        if (idx >= fullText.length) {
+            clearInterval(_typewriterTimer);
+            _typewriterTimer = null;
+            textEl.textContent = fullText;
+            textEl.classList.remove('typing');
+            screen.setAttribute('data-typing', '0');
+        } else {
+            textEl.textContent = fullText.slice(0, idx);
+        }
+    }, TYPING_SPEED);
+}
+
+function completeTypewriter(screen) {
+    if (_typewriterTimer) { clearInterval(_typewriterTimer); _typewriterTimer = null; }
+    const textEl = screen.querySelector('.vn-text');
+    if (!textEl) return;
+    const fullText = textEl.getAttribute('data-full-text') || textEl.textContent || '';
+    textEl.textContent = fullText;
+    textEl.classList.remove('typing');
+    screen.setAttribute('data-typing', '0');
+}
+
+// Watch for VN screen changes and start typewriter
+const _typewriterObserver = new MutationObserver(function() {
+    const screen = document.querySelector('.vn-screen:not(.vn-casting)');
+    if (screen && screen.getAttribute('data-typing') !== '0') {
+        // Small delay so the DOM settles
+        setTimeout(function() { startTypewriter(screen); }, 50);
+    }
+});
+// Start observing once the body is ready
+(function waitBody() {
+    if (document.body) {
+        _typewriterObserver.observe(document.body, { childList: true, subtree: true });
+    } else {
+        setTimeout(waitBody, 100);
+    }
+})();
+
+// ── Click bridge ───────────────────────────────────────────────
 const clickHidden = (sel) => {
     const el = document.querySelector(sel + ' button') || document.querySelector(sel);
     if (el) el.click();
@@ -390,23 +475,41 @@ document.addEventListener('click', function(e) {
         return;
     }
 
-    // Read-at-your-own-pace: clicking the screen advances to the next beat
-    // while more text remains (data-more="1"); choices replace the hint
-    // on the final beat, so clicks there only ever hit a choice button.
+    // Two-stage click: if typing, complete text; else advance
     const screen = e.target.closest('.vn-screen');
-    if (screen && screen.getAttribute('data-more') === '1') {
-        e.preventDefault();
-        clickHidden('#advance-btn');
+    if (screen) {
+        if (screen.getAttribute('data-typing') === '1') {
+            e.preventDefault();
+            completeTypewriter(screen);
+            return;
+        }
+        // If no more beats and choices visible, don't advance (let choice buttons work)
+        if (screen.getAttribute('data-more') === '1' && !e.target.closest('.vn-choices')) {
+            e.preventDefault();
+            clickHidden('#advance-btn');
+        }
     }
 });
 
-// Space / Enter also advance, unless the user is typing in a field.
+// Space / Enter: complete typewriter or advance
 document.addEventListener('keydown', function(e) {
     if (e.key !== ' ' && e.key !== 'Enter') return;
     const tag = (document.activeElement && document.activeElement.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    const screen = document.querySelector('.vn-screen[data-more="1"]');
-    if (screen) { e.preventDefault(); clickHidden('#advance-btn'); }
+
+    const screen = document.querySelector('.vn-screen');
+    if (!screen) return;
+
+    if (screen.getAttribute('data-typing') === '1') {
+        e.preventDefault();
+        completeTypewriter(screen);
+        return;
+    }
+
+    if (screen.getAttribute('data-more') === '1') {
+        e.preventDefault();
+        clickHidden('#advance-btn');
+    }
 });
 """
 
@@ -474,7 +577,7 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
         choices_html = "\n".join(parts)
 
     return f"""
-    <div class="vn-screen{' advancing' if more else ''}" data-more="{'1' if more else '0'}">
+    <div class="vn-screen{' advancing' if more else ''}" data-more="{'1' if more else '0'}" data-typing="0">
         {bg_layers}
         <div class="vn-chars">{sprite_html}</div>
         {choices_html}
@@ -647,20 +750,31 @@ _DIALOGUE_RE = re.compile(r'^\[(\w+)\]:\s*"(.*)"\s*$')
 
 def _segment_beats(response: str, cast: dict[str, CastMember],
                    init_expr: dict[str, str], init_bg: str,
+                   init_present: list[str] | None = None,
                    voice_line=None) -> list[dict]:
     """Split a turn's response into ordered display beats for paced reading.
 
     A beat is one narration paragraph or one dialogue line, tagged with the
-    sprite expressions and background in effect at that point — so a
-    set_expression that PRECEDES a line lands on that line's beat (the VN's
-    emotional lever). Tool/engine markers are consumed to advance the running
-    visual state, never shown. The single voiced line (if any) is attached to
-    the beat whose dialogue it matches.
+    sprite expressions, background, and present characters in effect at that
+    point — so a set_expression or enter_character that PRECEDES a line lands
+    on that line's beat (the VN's emotional lever). Tool/engine markers are
+    consumed to advance the running visual state, never shown. The single
+    voiced line (if any) is attached to the beat whose dialogue it matches.
+
+    Args:
+        response: Raw model response text.
+        cast: The locked cast.
+        init_expr: Initial expression state before processing this response.
+        init_bg: Initial background before processing this response.
+        init_present: Initial present list before processing this response.
+            If None, starts empty (characters must be called in).
+        voice_line: Optional VoiceLine from the engine.
     """
-    from vn_engine import parse_tool_calls, _check_cast_lock
+    from vn_engine import parse_tool_calls, _check_cast_lock, _route_tool
 
     expr = dict(init_expr or {})
     bg = init_bg or "classroom"
+    present = list(init_present) if init_present is not None else []
     beats: list[dict] = []
     narr: list[str] = []
 
@@ -669,7 +783,8 @@ def _segment_beats(response: str, cast: dict[str, CastMember],
         narr.clear()
         if text:
             beats.append({"speaker": "", "text": text,
-                          "expressions": dict(expr), "background": bg, "voice": None})
+                          "expressions": dict(expr), "background": bg,
+                          "present": list(present), "voice": None})
 
     for kind, chunk in _split_markers(response):
         if kind == "marker":
@@ -682,6 +797,14 @@ def _segment_beats(response: str, cast: dict[str, CastMember],
                         expr[canon] = e
                 elif tool in ("advance_scene", "set_background") and call.get("background"):
                     bg = call["background"]
+                elif tool == "enter_character":
+                    canon = _check_cast_lock(call.get("character", ""), cast)
+                    if canon and canon not in present:
+                        present.append(canon)
+                elif tool == "exit_character":
+                    canon = _check_cast_lock(call.get("character", ""), cast)
+                    if canon and canon in present:
+                        present.remove(canon)
             continue
         for line in chunk.split("\n"):
             s = line.strip()
@@ -693,7 +816,8 @@ def _segment_beats(response: str, cast: dict[str, CastMember],
                 flush_narr()
                 speaker = _check_cast_lock(m.group(1), cast) or m.group(1)
                 beats.append({"speaker": speaker, "text": m.group(2),
-                              "expressions": dict(expr), "background": bg, "voice": None})
+                              "expressions": dict(expr), "background": bg,
+                              "present": list(present), "voice": None})
             else:
                 narr.append(s)
         flush_narr()
@@ -729,7 +853,7 @@ def _render_beats_screen(beats: list[dict], idx: int, scene: SceneState,
     screen = _vn_screen_html(
         bg_path=bg_info.path,
         cast=scene.cast,
-        present=scene.present,
+        present=beat.get("present", scene.present),
         expressions=beat["expressions"],
         dialogue_speaker=beat["speaker"],
         dialogue_text=beat["text"] if beat["speaker"] else "",
@@ -816,14 +940,16 @@ def _make_callbacks(bg_provider: BackgroundProvider):
 
         # Beat 3 — lock the cast, build the engine, open the scene
         scene = SceneState(
-            cast=cast, present=list(cast.keys()),
+            cast=cast, present=[],
             background="classroom", mood="peaceful",
             turn=0, chapter="Prologue",
         )
         engine, status = build_engine(cast, scene)
         pre_expr, pre_bg = dict(scene.expressions), scene.background
+        pre_present = list(scene.present)
         raw, scene = engine.run_turn("")
-        beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg, engine.last_voice)
+        beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg,
+                               init_present=pre_present, voice_line=engine.last_voice)
 
         screen, prev_bg, voice_path = _render_beats_screen(beats, 0, scene, bg_provider, "")
         yield (scene, engine, screen, cast, _cast_panel_html(cast),
@@ -845,8 +971,10 @@ def _make_callbacks(bg_provider: BackgroundProvider):
         # Snapshot the visual state going INTO the turn so the beat splitter
         # can replay expression/background changes in order.
         pre_expr, pre_bg = dict(scene.expressions), scene.background
+        pre_present = list(scene.present)
         raw, scene = engine.run_turn(choice_text or choice_id)
-        beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg, engine.last_voice)
+        beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg,
+                               init_present=pre_present, voice_line=engine.last_voice)
 
         screen, new_prev_bg, voice_path = _render_beats_screen(
             beats, 0, scene, bg_provider, prev_bg)
@@ -877,7 +1005,8 @@ def _make_callbacks(bg_provider: BackgroundProvider):
         # static beat (the saved description) with its choices already visible.
         beats = [{"speaker": "", "text": scene.description or "",
                   "expressions": dict(scene.expressions),
-                  "background": scene.background, "voice": None}]
+                  "background": scene.background,
+                  "present": list(scene.present), "voice": None}]
         screen, new_prev_bg, _ = _render_beats_screen(beats, 0, scene, bg_provider, prev_bg)
         return (scene, engine, screen, scene.cast, _cast_panel_html(scene.cast),
                 scene.description,

@@ -33,7 +33,13 @@ You have the following tools to control the VN. Call them using the exact format
    `[TOOL: set_expression character="<name>" expression="<expression_key>"]`
    Valid expressions: neutral, smile, laugh, sad, angry, surprised, embarrassed
 
-4. **offer_choices** — Present the player with a set of choices.
+4. **enter_character** — Bring a character onto the screen. Call this the first time a character appears or when they re-enter mid-scene. Characters NOT in the present list do not render.
+   `[TOOL: enter_character character="<name>"]`
+
+5. **exit_character** — Remove a character from the screen. Call this when a character leaves the scene.
+   `[TOOL: exit_character character="<name>"]`
+
+6. **offer_choices** — Present the player with a set of choices.
    `[TOOL: offer_choices choices="<json array of {{id, text, consequence}}>"]`
    Each choice must have a unique id and display text. Consequence is the engine note.
 
@@ -76,6 +82,10 @@ Expression changes are the VN's emotional punctuation. Change them at moments of
 
 Don't spam expression changes. One or two per scene turn, placed at the emotional pivot, is ideal.
 
+## CHARACTER ENTERING AND EXITING
+
+Characters start the scene off-screen (not present). Use **enter_character** when they first appear or walk into the scene. Use **exit_character** when they leave. A character must be on screen to speak or be seen — if they're not in `present`, their sprite doesn't render. You do NOT need to enter_character for characters already present (check [STATE] banner for who's present).
+
 ## MOOD TAGS
 
 Available moods: peaceful, cheerful, romantic, melancholic, tense, playful, bittersweet, cozy
@@ -112,6 +122,8 @@ Tools available (use [TOOL: name args=val] format):
 - advance_scene description="..." background="key" mood="tag"
 - set_background background="key"
 - set_expression character="name" expression="key"
+- enter_character character="name"
+- exit_character character="name"
 - offer_choices choices='[{"id":"a","text":"...","consequence":"..."}]'
 - save_checkpoint
 

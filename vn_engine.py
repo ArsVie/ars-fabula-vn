@@ -383,6 +383,52 @@ def _handle_set_expression(tool_data: dict, scene: SceneState, cast: dict[str, C
     )
 
 
+def _handle_enter_character(tool_data: dict, scene: SceneState, cast: dict[str, CastMember]) -> ActionResult:
+    """Handle enter_character tool call.
+
+    Validates cast-lock, then appends to scene.present if not already present.
+    """
+    char_name = tool_data.get("character", "")
+
+    canonical = _check_cast_lock(char_name, cast)
+    if not canonical:
+        return ActionResult(
+            success=False,
+            message=f"Cast-lock violation: '{char_name}' is not in the cast. Ignored.",
+        )
+
+    if canonical not in scene.present:
+        scene.present.append(canonical)
+    return ActionResult(
+        success=True,
+        message=f"{canonical} entered the scene",
+        data={"character": canonical, "present": "enter"},
+    )
+
+
+def _handle_exit_character(tool_data: dict, scene: SceneState, cast: dict[str, CastMember]) -> ActionResult:
+    """Handle exit_character tool call.
+
+    Removes from scene.present. No-op if not present.
+    """
+    char_name = tool_data.get("character", "")
+
+    canonical = _check_cast_lock(char_name, cast)
+    if not canonical:
+        return ActionResult(
+            success=False,
+            message=f"Cast-lock violation: '{char_name}' is not in the cast. Ignored.",
+        )
+
+    if canonical in scene.present:
+        scene.present.remove(canonical)
+    return ActionResult(
+        success=True,
+        message=f"{canonical} exited the scene",
+        data={"character": canonical, "present": "exit"},
+    )
+
+
 def _loads_lenient(blob: str):
     """json.loads with a best-effort repair for common model deviations.
 
@@ -463,6 +509,8 @@ _TOOL_HANDLERS = {
     "advance_scene": _handle_advance_scene,
     "set_background": _handle_set_background,
     "set_expression": _handle_set_expression,
+    "enter_character": _handle_enter_character,
+    "exit_character": _handle_exit_character,
     "offer_choices": _handle_offer_choices,
     "save_checkpoint": _handle_save_checkpoint,
 }
@@ -476,7 +524,8 @@ def _route_tool(tool_data: dict, scene: SceneState, cast: dict[str, CastMember])
         return ActionResult(success=False, message=f"Unknown tool: {tool_name}")
 
     # Different handlers need different signatures
-    if tool_name == "set_expression":
+    cast_tools = ("set_expression", "enter_character", "exit_character")
+    if tool_name in cast_tools:
         return handler(tool_data, scene, cast)
     return handler(tool_data, scene)
 
@@ -669,7 +718,7 @@ class VNEngine:
         """Reset the scene to a fresh state with the same cast."""
         self.scene = SceneState(
             cast=self.cast,
-            present=list(self.cast.keys()),
+            present=[],
             background="classroom",
             mood="peaceful",
             turn=0,
