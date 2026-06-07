@@ -42,9 +42,11 @@ Verified working (mock + real model on `127.0.0.1:8111`):
 2. **`visible="hidden"`** (not `False`) keeps the bridge controls in the DOM. Clicking
    a `display:none` button and dispatching a synthetic `input` event on a `display:none`
    textbox both still reach the Gradio backend — verified.
-3. **The mock always hits the "talk" branch** (the `[STATE]` banner always contains
-   "Yuki", which the mock matches), so mock turns look identical. Use the **real model**
-   to see varied multi-beat turns. Not a bug.
+3. **Mock choice extraction** (fixed): the mock now strips the `[STATE]` banner from
+   the user prompt so it only checks the choice text. This means each mock branch
+   is reachable by selecting the right choice (`talk`, `look`, `confess`, or any other).
+   The old gotcha (mock always hit "talk" because "Yuki" was in every state banner)
+   is now fixed.
 4. When relaunching the app in a shell, `pkill -f "app.py"` will kill the launching
    shell too (its command line contains "app.py"). Use `pkill -f "[a]pp.py"`.
 
@@ -64,21 +66,7 @@ Verified working (mock + real model on `127.0.0.1:8111`):
 
 ## TODO for next session
 
-### 1. Clean up: remove unused `_route_tool` import in `_segment_beats`
-
-The `_segment_beats` function in `app.py` imports `_route_tool` from `vn_engine`
-but never uses it (it was left behind from the enter/exit refactor). Remove the
-unused import.
-
-### 2. Richer mock with varied enter/exit patterns
-
-The mock currently only calls `enter_character` once per branch and
-`exit_character` only in the "look" branch. Consider making the mock exercise
-multi-character scenes — e.g. have Yuki enter first, then Haruki enter mid-scene,
-then have one of them exit. This would exercise per-beat presence tracking in
-manual UI testing.
-
----
+*Nothing currently — all planned tasks completed. Check deferred items below.*
 
 ## Deferred (still valid)
 

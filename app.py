@@ -83,65 +83,110 @@ def data_uri(path: Optional[str]) -> str:
 # ── Mock VN LLM ───────────────────────────────────────────────────────
 
 def _make_mock_engine(cast: dict[str, CastMember]) -> MockModel:
-    """Create a MockModel that generates plausible VN narration + tool calls."""
+    """Create a MockModel that generates varied multi-character VN scenes.
+
+    Exercises enter_character/exit_character across beats to verify per-beat
+    presence tracking manually. Each branch produces a different character
+    lineup so the tester can see characters pop in/out visually.
+    """
     char_names = list(cast.keys())
+    # Expect Yuki (idx 0), Haruki (idx 1), Sakura (idx 2), Ryo (idx 3)
+    yuki = char_names[0] if len(char_names) > 0 else "Yuki"
+    haruki = char_names[1] if len(char_names) > 1 else "Haruki"
+    sakura = char_names[2] if len(char_names) > 2 else "Sakura"
+    ryo = char_names[3] if len(char_names) > 3 else "Ryo"
 
     def handler(messages, tools):
         user_msgs = [m for m in messages if m["role"] == "user"]
-        choice_text = user_msgs[-1]["content"] if user_msgs else ""
-
-        c1 = char_names[0] if len(char_names) > 0 else "Someone"
-        c2 = char_names[1] if len(char_names) > 1 else "Someone else"
-
+        raw_choice = user_msgs[-1]["content"] if user_msgs else ""
+        # Extract just the player's choice text after [CHOICE MADE]
+        choice_match = __import__("re").search(r"\[CHOICE MADE\]\n(.+?)\n\nWrite the next scene", raw_choice, __import__("re").DOTALL)
+        choice_text = choice_match.group(1).strip() if choice_match else ""
         choice_lower = choice_text.lower()
 
-        if "talk" in choice_lower or c1.lower() in choice_lower:
-            expressions = ["surprised", "smile", "embarrassed"]
+        # ── "talk" → Yuki + Haruki enter one-by-one ──────────────
+        if "talk" in choice_lower or yuki.lower() in choice_lower:
             return (
-                f"[TOOL: enter_character character=\"{c1}\"]\n\n"
-                f"[TOOL: set_expression character=\"{c1}\" expression=\"{expressions[0]}\"]\n\n"
-                f"[TOOL: advance_scene description=\"The afternoon sun filters through the classroom windows, casting warm rectangles of light across the wooden floor.\" background=\"classroom\" mood=\"cheerful\"]\n\n"
-                f"[TOOL: set_expression character=\"{c1}\" expression=\"{expressions[1]}\"]\n\n"
-                f"[{c1}]: \"Oh, hey! I didn't expect you to come over today. What's up?\"\n\n"
-                f"You feel a warmth in your chest at their genuine smile. The classroom, usually so ordinary, seems to glow a little brighter when they're in it.\n\n"
-                f"[TOOL: set_expression character=\"{c1}\" expression=\"{expressions[2]}\"]\n\n"
-                f"[{c1}]: \"Actually… I've been meaning to talk to you too. There's something I wanted to say.\"\n\n"
-                f"The air around you seems to still. A cherry blossom petal drifts past the open window.\n\n"
-                f"[TOOL: offer_choices choices='[{{\"id\":\"ask\",\"text\":\"\\\"What is it?\\\"\",\"consequence\":\"lean in\"}},{{\"id\":\"deflect\",\"text\":\"\\\"Can it wait? I'm kind of busy...\\\"\",\"consequence\":\"avoid the conversation\"}},{{\"id\":\"tease\",\"text\":\"\\\"Look who's getting serious all of a sudden~\\\"\",\"consequence\":\"tease them playfully\"}}]']"
+                f'[TOOL: enter_character character="{yuki}"]\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="surprised"]\n\n'
+                f'[TOOL: advance_scene description="The afternoon sun filters through the classroom windows, casting warm rectangles of light across the wooden floor. The scent of chalk dust and summer lingers in the air." background="classroom" mood="cheerful"]\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="smile"]\n\n'
+                f'[{yuki}]: "Oh, hey! I didn\'t expect you to come over today. What\'s up?"\n\n'
+                f'Her smile is warm and genuine, the afternoon light catching in her hair.\n\n'
+                f'[TOOL: enter_character character="{haruki}"]\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="surprised"]\n\n'
+                f'The door slides open and {haruki} pokes their head in, eyebrows raising as they spot the two of you.\n\n'
+                f'[TOOL: set_expression character="{haruki}" expression="laugh"]\n\n'
+                f'[{haruki}]: "Am I interrupting something? Should I come back later?"\n\n'
+                f'They\'re clearly teasing, a playful glint in their eye.\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="embarrassed"]\n\n'
+                f'[{yuki}]: "No! I mean — we were just talking. Come sit down."\n\n'
+                f'The atmosphere shifts into something lighter, the three of you settling into the familiar rhythm of friends.\n\n'
+                f'[TOOL: offer_choices choices=\'[{{"id":"ask","text":"\\\"So what did you want to talk about?\\\"","consequence":"get serious"}},{{"id":"tease","text":"\\\"Look who\'s getting protective~\\\"","consequence":"tease them both"}},{{"id":"group","text":"\\\"Let\'s all hang out after school!\\\"","consequence":"make plans together"}}]\']'
             )
 
+        # ── "look" / "alone" → Yuki enters, exits, then Sakura enters ──
         elif "look" in choice_lower or "alone" in choice_lower:
             return (
-                f"[TOOL: enter_character character=\"{c1}\"]\n\n"
-                f"[TOOL: set_expression character=\"{c1}\" expression=\"sad\"]\n\n"
-                f"[TOOL: advance_scene description=\"The classroom feels emptier when it's just you. Through the window, you can see the courtyard where students are laughing, the sound muffled by glass.\" background=\"classroom\" mood=\"melancholic\"]\n\n"
-                f"Your eyes drift to {c1}'s desk. A notebook left behind, pages fluttering in the breeze from the open window.\n\n"
-                f"[TOOL: exit_character character=\"{c1}\"]\n\n"
-                f"The door clicks shut behind them. You're alone with the afternoon light.\n\n"
-                f"[TOOL: offer_choices choices='[{{\"id\":\"wait\",\"text\":\"Wait for them to come back\",\"consequence\":\"sit and wait\"}},{{\"id\":\"go_find\",\"text\":\"Go look for them\",\"consequence\":\"search the school\"}},{{\"id\":\"leave\",\"text\":\"Head home\",\"consequence\":\"leave for the day\"}}]']"
+                f'[TOOL: enter_character character="{yuki}"]\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="sad"]\n\n'
+                f'[TOOL: advance_scene description="The classroom feels emptier than usual. Through the window, the courtyard buzzes with laughter muffled by glass." background="classroom" mood="melancholic"]\n\n'
+                f'[{yuki}]: "I\'ve been thinking a lot lately. About everything, really."\n\n'
+                f'They stare out the window, their reflection overlapping with the clouds drifting past.\n\n'
+                f'[TOOL: exit_character character="{yuki}"]\n\n'
+                f'The door clicks shut. The room settles into silence, dust motes dancing in the slanted light. A notebook left behind on the desk, pages fluttering.\n\n'
+                f'Minutes pass. Then the door opens again.\n\n'
+                f'[TOOL: enter_character character="{sakura}"]\n\n'
+                f'[TOOL: set_expression character="{sakura}" expression="smile"]\n\n'
+                f'[{sakura}]: "Hey, I saw {yuki} heading to the roof. They looked kinda down — thought you should know."\n\n'
+                f'She leans against the doorframe, concern flickering behind her cheerful demeanour.\n\n'
+                f'[TOOL: offer_choices choices=\'[{{"id":"follow","text":"Go to the roof after them","consequence":"check on yuki"}},{{"id":"talk_sakura","text":"Stay and talk to Sakura instead","consequence":"talk with sakura"}},{{"id":"leave","text":"Head home — it\'s been a long day","consequence":"leave for the day"}}]\']'
             )
 
+        # ── "confess" / "love" → Rooftop with interrupted confession ──
         elif "confess" in choice_lower or "love" in choice_lower:
             return (
-                f"[TOOL: enter_character character=\"{c1}\"]\n\n"
-                f"[TOOL: set_expression character=\"{c1}\" expression=\"surprised\"]\n\n"
-                f"[TOOL: advance_scene description=\"Time seems to stop. The world narrows to just the two of you — the distant sounds of the school fading into nothing.\" background=\"rooftop\" mood=\"romantic\"]\n\n"
-                f"[TOOL: set_expression character=\"{c1}\" expression=\"embarrassed\"]\n\n"
-                f"For a long, breathless moment, neither of you speaks. The wind carries petals between you, swirling in a lazy dance.\n\n"
-                f"[TOOL: set_expression character=\"{c1}\" expression=\"smile\"]\n\n"
-                f"[{c1}]: \"I… I didn't think you'd ever say that. I feel the same way.\"\n\n"
-                f"The sunset paints the world in shades of gold and pink. Somewhere, a bell tolls the hour. But right now, it's just the two of you.\n\n"
-                f"[TOOL: offer_choices choices='[{{\"id\":\"hold_hands\",\"text\":\"Take their hand\",\"consequence\":\"a gentle touch\",\"next_background\":\"sunset_hill\",\"next_mood\":\"romantic\",\"affection_flag\":[\"{c1}\",\"confession\"]}},{{\"id\":\"hug\",\"text\":\"Pull them into a hug\",\"consequence\":\"embrace\",\"next_background\":\"rooftop\",\"next_mood\":\"romantic\"}},{{\"id\":\"speak\",\"text\":\"\\\"I've wanted to say it for so long...\\\"\",\"consequence\":\"vulnerable truth\",\"next_background\":\"rooftop\",\"next_mood\":\"romantic\"}}]']"
+                f'[TOOL: enter_character character="{yuki}"]\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="surprised"]\n\n'
+                f'[TOOL: advance_scene description="Time seems to slow. The rooftop stretches out before you, the city glittering in the distance. Cherry blossom petals drift lazily on the warm breeze." background="rooftop" mood="romantic"]\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="embarrassed"]\n\n'
+                f'[{yuki}]: "I… I\'ve been wanting to tell you something for a while now."\n\n'
+                f'For a long, breathless moment, neither of you speaks. The wind carries petals between you.\n\n'
+                f'[TOOL: enter_character character="{haruki}"]\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="surprised"]\n\n'
+                f'[TOOL: set_expression character="{haruki}" expression="laugh"]\n\n'
+                f'[{haruki}]: "Whoa — sorry, sorry! I didn\'t mean to walk in on… whatever this is."\n\n'
+                f'They back away with their hands up, grinning, and disappear back through the door.\n\n'
+                f'[TOOL: exit_character character="{haruki}"]\n\n'
+                f'The moment hangs in the air again, fragile and electric.\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="smile"]\n\n'
+                f'[{yuki}]: "As I was saying… I really like you. I have for a long time."\n\n'
+                f'The sunset paints the world in shades of gold and pink.\n\n'
+                f'[TOOL: offer_choices choices=\'[{{"id":"hold_hands","text":"Take their hand","consequence":"a gentle touch","next_background":"sunset_hill","next_mood":"romantic","affection_flag":["{yuki}","confession"]}},{{"id":"hug","text":"Pull them into a hug","consequence":"embrace","next_background":"rooftop","next_mood":"romantic"}},{{"id":"speak","text":"\\\"I\'ve wanted to say it for so long too…\\\"","consequence":"vulnerable truth","next_background":"rooftop","next_mood":"romantic"}}]\']'
             )
 
+        # ── Default / first turn → three characters gradually enter ──
         else:
             return (
-                f"[TOOL: enter_character character=\"{c1}\"]\n\n"
-                f"[TOOL: advance_scene description=\"The bell rings, signaling the end of another school day. Students begin packing their bags, the air filled with chatter and the shuffle of papers.\" background=\"classroom\" mood=\"peaceful\"]\n\n"
-                f"[TOOL: set_expression character=\"{c1}\" expression=\"smile\"]\n\n"
-                f"[{c1}]: \"Hey, you ready to head out? I was thinking we could grab something from the café near the station.\"\n\n"
-                f"They pack their bag with practiced ease, glancing at you expectantly. There's a warmth in their eyes that makes even an ordinary school day feel special.\n\n"
-                f"[TOOL: offer_choices choices='[{{\"id\":\"yes_cafe\",\"text\":\"\\\"Sure, sounds good!\\\"\",\"consequence\":\"go to the cafe together\"}},{{\"id\":\"rain_check\",\"text\":\"\\\"Maybe tomorrow? I've got stuff to do.\\\"\",\"consequence\":\"politely decline\"}},{{\"id\":\"invite_others\",\"text\":\"\\\"Mind if {c2} comes too?\\\"\",\"consequence\":\"make it a group outing\"}}]']"
+                f'[TOOL: enter_character character="{yuki}"]\n\n'
+                f'[TOOL: advance_scene description="The bell rings, signalling the end of another school day. Students begin packing their bags, the air filled with chatter and the shuffle of papers. Sunlight streams through the tall windows." background="classroom" mood="peaceful"]\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="smile"]\n\n'
+                f'[{yuki}]: "Hey! Ready to head out?"\n\n'
+                f'They pack their bag with practiced ease, glancing at you expectantly.\n\n'
+                f'[TOOL: enter_character character="{haruki}"]\n\n'
+                f'[TOOL: set_expression character="{haruki}" expression="laugh"]\n\n'
+                f'[{haruki}]: "Leaving without me? I\'m hurt, really."\n\n'
+                f'They saunter over, slinging their bag over one shoulder, a familiar teasing grin on their face.\n\n'
+                f'[TOOL: set_expression character="{yuki}" expression="laugh"]\n\n'
+                f'[{yuki}]: "You take forever, {haruki}. We were about to send a search party."\n\n'
+                f'[TOOL: enter_character character="{sakura}"]\n\n'
+                f'[TOOL: set_expression character="{sakura}" expression="smile"]\n\n'
+                f'[{sakura}]: "Are we doing the café thing? I\'m starving."\n\n'
+                f'She appears from the hallway, already halfway out the door, flipping her hair with practiced nonchalance.\n\n'
+                f'[TOOL: set_expression character="{haruki}" expression="smile"]\n\n'
+                f'[{haruki}]: "Café sounds perfect. My treat — I just got paid for that tutoring gig."\n\n'
+                f'The three of them look at you, waiting, the late afternoon light pooling around them like a scene from a movie.\n\n'
+                f'[TOOL: offer_choices choices=\'[{{"id":"yes_cafe","text":"\\\"Sure, let\'s go!\\\"","consequence":"go to the cafe together"}},{{"id":"rain_check","text":"\\\"Maybe tomorrow? I\'ve got stuff to do.\\\"","consequence":"politely decline"}},{{"id":"walk","text":"\\\"I\'ll walk with you guys but I can\'t stay long.\\\"","consequence":"partial join"}}]\']'
             )
 
     return MockModel(handler=handler)
