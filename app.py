@@ -227,212 +227,425 @@ def build_engine(cast: dict[str, CastMember], scene: SceneState) -> tuple[VNEngi
 # ═══════════════════════════════════════════════════════════════════════
 
 CSS = """
-/* ── Global ── */
-.gradio-container {
-    background: #1a1a2e !important;
-    color: #e0d5c8 !important;
-    font-family: 'Georgia', 'Palatino', 'Noto Serif JP', serif !important;
-    max-width: 100% !important;
+/* ── Fonts ── */
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Cinzel:wght@400;600&family=Noto+Sans+JP:wght@300;400&display=swap');
+
+/* ── Tokens ── */
+:root {
+  --bg-void:       #0d0d1a;
+  --bg-surface:    #13132a;
+  --bg-raised:     #1c1c38;
+  --bg-screen:     #08081a;
+  --border-subtle: #252545;
+  --border-mid:    #3a3a62;
+  --border-accent: #e8a87c;
+  --border-glow:   rgba(232,168,124,0.35);
+  --text-primary:  #e8e0d8;
+  --text-secondary:#9090b8;
+  --text-muted:    #555578;
+  --text-accent:   #e8a87c;
+  --text-narrator: #a8a090;
+  --dialogue-bg:   rgba(8,8,26,0.92);
+  --font-display:  'Cinzel', 'Georgia', serif;
+  --font-dialogue: 'Cormorant Garamond', 'Georgia', serif;
+  --font-ui:       'Noto Sans JP', 'Georgia', serif;
 }
+
+/* ── Global Reset ── */
+.gradio-container {
+  background: var(--bg-void) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-ui) !important;
+  max-width: 100% !important;
+}
+*:focus { outline: 2px solid var(--border-accent) !important; outline-offset: 2px; }
 
 /* ── VN Screen ── */
 .vn-screen {
-    position: relative;
-    width: 100%;
-    height: 550px;
-    background: #0a0a1a;
-    border: 2px solid #2a2a4a;
-    border-radius: 8px;
-    overflow: hidden;
-    margin-bottom: 8px;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 380px;
+  max-height: 620px;
+  background: var(--bg-screen);
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 8px;
 }
 
-/* Double-buffered background layers: .old sits below, .new fades in over it */
+/* Background layers */
 .vn-bg {
-    position: absolute;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
-    object-fit: cover;
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
 }
-.vn-bg.new { animation: vnBgFade 1.1s ease both; }
+.vn-bg.new { animation: vnBgFade 1.3s ease both; }
 @keyframes vnBgFade { from { opacity: 0; } to { opacity: 1; } }
 
+/* Sprites */
 .vn-chars {
-    position: absolute;
-    bottom: 120px;
-    left: 0;
-    width: 100%;
-    display: flex;
-    justify-content: center;
-    align-items: flex-end;
-    gap: 20px;
-    pointer-events: none;
+  position: absolute;
+  bottom: 120px;
+  left: 0;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 20px;
+  pointer-events: none;
 }
 .vn-sprite {
-    height: 350px;
-    width: auto;
-    animation: vnSpriteIn 0.45s ease both;
+  height: 60%;
+  max-height: 380px;
+  width: auto;
+  animation: vnSpriteIn 0.5s ease both;
 }
 @keyframes vnSpriteIn {
-    from { opacity: 0.35; transform: translateY(6px); }
-    to   { opacity: 1;    transform: translateY(0); }
+  from { opacity: 0.2; transform: translateY(10px) scale(0.97); }
+  to   { opacity: 1;   transform: translateY(0)    scale(1); }
 }
 
 /* ── Dialogue Box ── */
 .vn-dialogue {
-    position: absolute;
-    bottom: 0; left: 0; right: 0;
-    background: linear-gradient(0deg, rgba(10, 10, 30, 0.95) 0%, rgba(10, 10, 30, 0.85) 100%);
-    padding: 16px 24px;
-    border-top: 2px solid #4a4a6a;
-    min-height: 110px;
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  background: linear-gradient(to top, rgba(8,8,26,0.97) 0%, rgba(8,8,26,0.85) 60%, transparent 100%);
+  padding: 20px 28px 16px;
+  min-height: 120px;
+}
+.vn-dialogue.has-speaker {
+  border-left: 3px solid var(--border-accent);
+}
+.vn-name-plate {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+  color: var(--text-accent);
+  background: rgba(232,168,124,0.1);
+  border: 1px solid var(--border-accent);
+  border-radius: 3px;
+  padding: 2px 10px;
+  margin-bottom: 8px;
 }
 .vn-name {
-    font-weight: bold;
-    color: #e8a87c;
-    font-size: 1.1rem;
-    margin-bottom: 4px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text-accent);
+  font-size: 1rem;
+  margin-bottom: 6px;
+  letter-spacing: 0.06em;
 }
-.vn-text { color: #e0d5c8; font-size: 1rem; line-height: 1.6; margin: 0; }
-.vn-text.narrator { font-style: italic; color: #b0a898; }
+.vn-text {
+  font-family: var(--font-dialogue);
+  color: var(--text-primary);
+  font-size: 1.15rem;
+  line-height: 1.7;
+  margin: 0;
+}
+.vn-text.narrator {
+  font-style: italic;
+  color: var(--text-narrator);
+}
 
-/* Typewriter cursor — blinks while text is being revealed */
+/* Typewriter cursor */
 .vn-text.typing::after {
-    content: '▌';
-    animation: vnBlink 0.7s step-end infinite;
-    color: #e8a87c;
-    margin-left: 1px;
+  content: '▌';
+  animation: vnBlink 0.7s step-end infinite;
+  color: var(--text-accent);
+  margin-left: 1px;
 }
 @keyframes vnBlink { 50% { opacity: 0; } }
 
-/* Click-to-advance affordance: the whole screen is the "next" button while
-   there are more beats to read; the ▼ blinks in the dialogue corner. */
+/* Click-to-advance affordance */
 .vn-screen.advancing { cursor: pointer; }
 .vn-continue {
-    position: absolute;
-    right: 16px; bottom: 10px;
-    color: #e8a87c; font-size: 1rem;
-    animation: vnPulse 1.2s ease infinite;
-    pointer-events: none;
+  position: absolute;
+  right: 16px; bottom: 10px;
+  color: var(--text-accent);
+  font-size: 1rem;
+  animation: vnPulse 1.2s ease infinite;
+  pointer-events: none;
 }
+@keyframes vnPulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
 
 /* ── Choices ── */
 .vn-choices {
-    position: absolute;
-    bottom: 130px; left: 0; right: 0;
-    padding: 12px 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    pointer-events: auto;
+  position: absolute;
+  bottom: 140px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 70%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: auto;
 }
 .vn-choice-btn {
-    background: rgba(40, 40, 80, 0.9) !important;
-    border: 1px solid #4a4a6a !important;
-    color: #e0d5c8 !important;
-    font-family: 'Georgia', serif !important;
-    font-size: 0.95rem !important;
-    padding: 10px 16px !important;
-    border-radius: 6px !important;
-    text-align: left !important;
-    cursor: pointer !important;
-    transition: all 0.2s ease !important;
+  background: rgba(19,19,42,0.88) !important;
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-mid) !important;
+  border-left: 3px solid var(--border-accent) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-dialogue) !important;
+  font-size: 1rem !important;
+  padding: 11px 18px !important;
+  border-radius: 4px !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  transition: border-color 0.18s, background 0.18s, transform 0.12s !important;
 }
 .vn-choice-btn:hover {
-    background: rgba(60, 60, 120, 0.9) !important;
-    border-color: #e8a87c !important;
-    color: #fff !important;
+  background: rgba(35,35,70,0.95) !important;
+  border-left-color: var(--border-accent) !important;
+  border-color: var(--border-accent) !important;
+  transform: translateX(3px);
+  color: #fff !important;
 }
 
 /* ── Casting beat ── */
 .vn-casting {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    gap: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 24px;
+  background: radial-gradient(ellipse at center, #1c1c38 0%, var(--bg-screen) 70%);
 }
 .vn-casting .casting-title {
-    color: #e8a87c;
-    font-size: 1.25rem;
-    font-style: italic;
-    animation: vnPulse 1.6s ease infinite;
+  font-family: var(--font-display);
+  color: var(--text-accent);
+  font-size: 1.1rem;
+  letter-spacing: 0.15em;
+  animation: vnPulse 1.6s ease infinite;
 }
-@keyframes vnPulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
 .vn-casting .portraits { display: flex; gap: 24px; }
 .vn-portrait {
-    width: 110px; height: 160px;
-    border-radius: 8px;
-    border: 1px solid #4a4a6a;
-    background: rgba(30,30,60,0.7);
-    overflow: hidden;
-    display: flex; align-items: center; justify-content: center;
+  width: 110px; height: 160px;
+  border-radius: 6px;
+  border: 1px solid var(--border-mid);
+  background: var(--bg-surface);
+  overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
 }
+.vn-portrait.pending { border-style: dashed; border-color: var(--border-subtle); }
 .vn-portrait img {
-    width: 100%; height: 100%; object-fit: cover; object-position: top;
-    animation: vnBgFade 0.8s ease both;
+  width: 100%; height: 100%;
+  object-fit: cover; object-position: top;
+  animation: portraitReveal 0.5s ease both;
 }
-.vn-portrait.pending { color: #555a7a; font-size: 2rem; }
-.vn-portrait .pname {
-    color: #e8a87c; font-size: 0.8rem; text-align: center;
+@keyframes portraitReveal {
+  from { opacity: 0; transform: scale(0.92) translateY(4px); }
+  to   { opacity: 1;   transform: scale(1)    translateY(0); }
+}
+.pname {
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  color: var(--text-accent);
+  margin-top: 4px;
+  letter-spacing: 0.06em;
+}
+.pname.pending {
+  color: var(--text-muted);
+}
+.portrait-wrap {
+  text-align: center;
 }
 
-/* ── Scene Info / Cast Panel ── */
-.scene-info {
-    color: #8888aa;
-    font-size: 0.8rem;
-    padding: 4px 8px;
-    border-left: 2px solid #4a4a6a;
-    margin: 4px 0;
+/* ── Cast Panel extras ── */
+.cast-expressions {
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 4px;
 }
+.cast-panel-empty {
+  padding: 8px;
+  color: var(--text-muted);
+  font-family: var(--font-dialogue);
+  font-style: italic;
+  font-size: 0.88rem;
+}
+
+/* ── Cast Cards (sidebar) ── */
 .cast-card {
-    background: linear-gradient(135deg, #1a1a3e 0%, #16213e 100%);
-    border: 1px solid #2a2a4a;
-    border-radius: 8px;
-    padding: 10px 12px;
-    margin-bottom: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-accent);
+  border-radius: 5px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+  transition: border-color 0.15s;
 }
-.cast-card .name { font-weight: bold; color: #e8a87c; font-size: 0.95rem; }
-.cast-card .role { color: #8888aa; font-size: 0.8rem; font-style: italic; }
-.cast-card .personality { color: #b0a898; font-size: 0.8rem; margin-top: 4px; line-height: 1.3; }
+.cast-card:hover { border-color: var(--border-mid); }
+.cast-card .name {
+  font-family: var(--font-display);
+  font-size: 0.88rem;
+  color: var(--text-accent);
+  letter-spacing: 0.06em;
+}
+.cast-card .role {
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.cast-card .personality {
+  font-family: var(--font-dialogue);
+  font-style: italic;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin-top: 5px;
+  line-height: 1.4;
+}
 
-/* ── Buttons / headings ── */
-button {
-    border: 1px solid #3a3a5a !important;
-    background: linear-gradient(180deg, #2a2a4a 0%, #1a1a3e 100%) !important;
-    color: #e0d5c8 !important;
-    font-family: 'Georgia', serif !important;
-    border-radius: 6px !important;
-    transition: all 0.2s ease !important;
+/* ── Header ── */
+.vn-header { padding: 14px 0 12px; margin-bottom: 14px; }
+.vn-title-main {
+  font-family: var(--font-display);
+  font-size: 1.9rem;
+  font-weight: 600;
+  color: var(--text-accent);
+  letter-spacing: 0.3em;
+  text-shadow: 0 0 40px rgba(232,168,124,0.25);
 }
-button:hover { border-color: #e8a87c !important; color: #fff !important; }
-h1, h2, h3 { font-family: 'Georgia', serif !important; color: #e8a87c !important; }
+.vn-title-sub {
+  font-family: var(--font-dialogue);
+  font-style: italic;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+.vn-header-rule {
+  height: 1px;
+  background: linear-gradient(to right, var(--border-accent), transparent);
+  margin-top: 10px;
+  opacity: 0.35;
+}
 
-/* Free-text fallback input — VN themed */
-#free-input-row { margin-top: 4px; }
-#free-input textarea {
-    background: #1a1a3e !important;
-    border: 1px solid #3a3a5a !important;
-    color: #e0d5c8 !important;
-    font-family: 'Georgia', serif !important;
-    font-size: 0.9rem !important;
-    border-radius: 6px !important;
+/* ── Sidebar ── */
+.sidebar-col { border-right: 1px solid var(--border-subtle); padding-right: 14px !important; }
+.sidebar-section-label {
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-accent);
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 4px;
+  margin: 16px 0 10px;
 }
-#free-input label { color: #8888aa !important; font-family: 'Georgia', serif !important; }
+
+/* ── Scene Info HUD ── */
+.scene-info p, .scene-info {
+  font-family: var(--font-ui) !important;
+  font-size: 0.72rem !important;
+  color: var(--text-muted) !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  border-left: 2px solid var(--border-subtle);
+  padding-left: 8px;
+  margin: 4px 0 !important;
+}
+
+/* ── Buttons ── */
+button { border-radius: 3px !important; transition: all 0.18s ease !important; }
+.gradio-container button:not(.vn-choice-btn) {
+  font-family: var(--font-display) !important;
+  font-size: 0.72rem !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-mid) !important;
+  color: var(--text-secondary) !important;
+}
+.gradio-container button:not(.vn-choice-btn):hover {
+  border-color: var(--border-accent) !important;
+  color: var(--text-accent) !important;
+  background: var(--bg-raised) !important;
+}
+button[variant="primary"] {
+  background: linear-gradient(135deg, #c07840, #e8a87c) !important;
+  border-color: var(--border-accent) !important;
+  color: #0d0d1a !important;
+  font-weight: 600 !important;
+}
+button[variant="primary"]:hover {
+  box-shadow: 0 0 14px var(--border-glow) !important;
+}
+button[variant="stop"] { border-color: #c06060 !important; color: #c06060 !important; }
+
+/* ── Free-text input ── */
+#free-input-row { margin-top: 8px; border-top: 1px solid var(--border-subtle); padding-top: 8px; }
+#free-input textarea, #free-input input {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-mid) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-dialogue) !important;
+  font-size: 1rem !important;
+  font-style: italic !important;
+  caret-color: var(--text-accent) !important;
+  border-radius: 3px !important;
+}
+#free-input textarea:focus, #free-input input:focus {
+  border-color: var(--border-accent) !important;
+  box-shadow: 0 0 0 2px var(--border-glow) !important;
+}
+#free-input label {
+  font-family: var(--font-ui) !important;
+  font-size: 0.7rem !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+  color: var(--text-muted) !important;
+}
 #free-submit-btn button {
-    background: linear-gradient(180deg, #e8a87c 0%, #d4896a 100%) !important;
-    border: 1px solid #e8a87c !important;
-    color: #1a1a2e !important;
-    font-family: 'Georgia', serif !important;
-    font-weight: bold !important;
-    border-radius: 6px !important;
-    height: 100% !important;
+  background: linear-gradient(135deg, #c07840, #e8a87c) !important;
+  border-color: var(--border-accent) !important;
+  color: #0d0d1a !important;
+  font-weight: 600 !important;
 }
 #free-submit-btn button:hover {
-    background: linear-gradient(180deg, #f0b88c 0%, #e0987a 100%) !important;
-    border-color: #f0b88c !important;
+  box-shadow: 0 0 14px var(--border-glow) !important;
 }
+
+/* ── Narration Log ── */
+.gr-textbox textarea {
+  background: var(--bg-void) !important;
+  border: 1px solid var(--border-subtle) !important;
+  color: var(--text-narrator) !important;
+  font-family: var(--font-dialogue) !important;
+  font-style: italic !important;
+  font-size: 0.88rem !important;
+  line-height: 1.65 !important;
+  border-radius: 4px !important;
+}
+label {
+  font-family: var(--font-ui) !important;
+  font-size: 0.72rem !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+  color: var(--text-muted) !important;
+}
+
+/* ── Number input (save slot) ── */
+.gr-number input {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-mid) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-ui) !important;
+  border-radius: 3px !important;
+  text-align: center !important;
+}
+
+/* ── Hide audio widget (audio still plays via autoplay) ── */
+.gr-audio { height: 2px !important; overflow: hidden !important; opacity: 0 !important; pointer-events: none !important; margin: 0 !important; }
+
+/* ── Gradio headings ── */
+h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-accent) !important; }
 """
 
 # Installed via launch(js=...) — gr.HTML strips <script> tags, so a page
@@ -650,7 +863,7 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
     dialogue_html = ""
     if dialogue_text:
         if dialogue_speaker:
-            dialogue_html = f'<div class="vn-name">{dialogue_speaker}</div>'
+            dialogue_html = f'<div class="vn-name-plate">{dialogue_speaker}</div>'
         dialogue_html += f'<p class="vn-text{" narrator" if not dialogue_speaker else ""}">{dialogue_text}</p>'
     elif narration:
         dialogue_html = f'<p class="vn-text narrator">{narration}</p>'
@@ -676,7 +889,7 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
         {bg_layers}
         <div class="vn-chars">{sprite_html}</div>
         {choices_html}
-        <div class="vn-dialogue">{dialogue_html}</div>
+        <div class="vn-dialogue{' has-speaker' if dialogue_speaker else ''}">{dialogue_html}</div>
     </div>"""
 
 
@@ -693,17 +906,15 @@ def _casting_screen_html(char_keys: list[str],
             inner = (f'<img src="{uri}" alt="{name}">' if uri
                      else f'<div class="pname">{name}</div>')
             portraits.append(
-                f'<div style="text-align:center;">'
+                f'<div class="portrait-wrap">'
                 f'<div class="vn-portrait">{inner}</div>'
-                f'<div class="pname" style="margin-top:4px;color:#e8a87c;'
-                f'font-size:0.8rem;">{name}</div></div>'
+                f'<div class="pname">{name}</div></div>'
             )
         else:
             portraits.append(
-                f'<div style="text-align:center;">'
+                f'<div class="portrait-wrap">'
                 f'<div class="vn-portrait pending">…</div>'
-                f'<div class="pname" style="margin-top:4px;color:#555a7a;'
-                f'font-size:0.8rem;">?</div></div>'
+                f'<div class="pname pending">?</div></div>'
             )
 
     return f"""
@@ -719,7 +930,7 @@ def _casting_screen_html(char_keys: list[str],
 def _cast_panel_html(cast: dict[str, CastMember]) -> str:
     """Build HTML for the cast info panel."""
     if not cast:
-        return '<div style="padding:8px;color:#8888aa;">No cast yet — start a story.</div>'
+        return '<div class="cast-panel-empty">No cast yet — start a story.</div>'
     parts = ['<div style="padding:8px;">']
     for name, member in cast.items():
         char = member.character
@@ -728,7 +939,7 @@ def _cast_panel_html(cast: dict[str, CastMember]) -> str:
             f'<div class="name">{char.name}</div>'
             f'<div class="role">{char.role} · ♪ {char.voice_id}</div>'
             f'<div class="personality">{char.personality}</div>'
-            f'<div style="color:#666;font-size:0.75rem;margin-top:4px;">'
+            f'<div class="cast-expressions">'
             f'Expressions: {", ".join(member.expression_map.keys())}'
             f'</div></div>'
         )
@@ -1148,26 +1359,19 @@ def create_ui():
 
         # ── Header ──────────────────────────────────────────────
         gr.HTML("""
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-            <span style="font-size:2rem;">🌸</span>
-            <div>
-                <div style="font-size:1.6rem;font-weight:bold;color:#e8a87c;
-                            font-family:'Georgia',serif;letter-spacing:1px;">
-                    ARS-FABULA
-                </div>
-                <div style="color:#8888aa;font-size:0.85rem;font-style:italic;">
-                    — A Slice-of-Life Visual Novel —
-                </div>
-            </div>
+        <div class="vn-header">
+          <div class="vn-title-main">ARS-FABULA</div>
+          <div class="vn-title-sub">— A Slice-of-Life Visual Novel —</div>
+          <div class="vn-header-rule"></div>
         </div>
         """)
 
         with gr.Row(equal_height=False):
             # ── Left: Cast / Controls ──────────────────────────
-            with gr.Column(scale=1, min_width=250):
+            with gr.Column(scale=1, min_width=250, elem_classes="sidebar-col"):
                 cast_panel = gr.HTML(_cast_panel_html(DEFAULT_CAST))
 
-                gr.Markdown("### 🎬 New Game")
+                gr.HTML('<div class="sidebar-section-label">New Game</div>')
                 cast_preset = gr.Radio(
                     choices=[
                         ("Curated (no ComfyUI needed)", "curated"),
@@ -1183,7 +1387,7 @@ def create_ui():
                     elem_classes="scene-info",
                 )
 
-                gr.Markdown("### 💾 Save / Load")
+                gr.HTML('<div class="sidebar-section-label">Save / Load</div>')
                 save_slot = gr.Number(value=0, minimum=0, maximum=4, step=1,
                                       label="Slot", precision=0)
                 with gr.Row():
@@ -1309,9 +1513,8 @@ if __name__ == "__main__":
         allowed_paths=[STATIC_DIR],   # belt-and-braces; images are data URIs anyway
         css=CSS,                      # Gradio 6: css/js/theme live on launch()
         js=ONLOAD_JS,
-        theme=gr.themes.Soft(
-            primary_hue="violet",
-            secondary_hue="rose",
+        theme=gr.themes.Base(
+            primary_hue="amber",
             neutral_hue="slate",
         ),
         quiet=False,
