@@ -770,7 +770,7 @@ def _segment_beats(response: str, cast: dict[str, CastMember],
             If None, starts empty (characters must be called in).
         voice_line: Optional VoiceLine from the engine.
     """
-    from vn_engine import parse_tool_calls, _check_cast_lock, _route_tool
+    from vn_engine import parse_tool_calls, _check_cast_lock
 
     expr = dict(init_expr or {})
     bg = init_bg or "classroom"
