@@ -1,0 +1,72 @@
+{
+  "chapter": "Prologue",
+  "turn": 2,
+  "background": "classroom",
+  "mood": "cheerful",
+  "description": "The afternoon sun filters through the classroom windows, casting warm rectangles of light across the wooden floor.",
+  "present": [
+    "Yuki",
+    "Haruki",
+    "Sakura"
+  ],
+  "cast_names": [
+    "Yuki",
+    "Haruki",
+    "Sakura"
+  ],
+  "dialogue_snapshot": [
+    {
+      "speaker": "Yuki",
+      "text": "Oh, hey! I didn't expect you to come over today. What's up?",
+      "expression": "embarrassed"
+    },
+    {
+      "speaker": "Yuki",
+      "text": "Actually… I've been meaning to talk to you too. There's something I wanted to say.",
+      "expression": "embarrassed"
+    },
+    {
+      "speaker": "Yuki",
+      "text": "Oh, hey! I didn't expect you to come over today. What's up?",
+      "expression": "embarrassed"
+    },
+    {
+      "speaker": "Yuki",
+      "text": "Actually… I've been meaning to talk to you too. There's something I wanted to say.",
+      "expression": "embarrassed"
+    }
+  ],
+  "affection_snapshot": [],
+  "expressions": {
+    "Yuki": "embarrassed"
+  },
+  "choices_snapshot": [
+    {
+      "id": "ask",
+      "text": "\"What is it?\"",
+      "consequence": "lean in",
+      "affection_flag": null,
+      "next_background": null,
+      "next_mood": null,
+      "expression_changes": {}
+    },
+    {
+      "id": "deflect",
+      "text": "\"Can it wait? I'm kind of busy...\"",
+      "consequence": "avoid the conversation",
+      "affection_flag": null,
+      "next_background": null,
+      "next_mood": null,
+      "expression_changes": {}
+    },
+    {
+      "id": "tease",
+      "text": "\"Look who's getting serious all of a sudden~\"",
+      "consequence": "tease them playfully",
+      "affection_flag": null,
+      "next_background": null,
+      "next_mood": null,
+      "expression_changes": {}
+    }
+  ]
+}
