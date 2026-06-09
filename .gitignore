@@ -24,3 +24,15 @@ Thumbs.db
 
 # Runtime
 *.log
+
+# Generated assets & runtime data (regenerable sprites/backgrounds,
+# save slots, contact-sheet report) — kept out of version control.
+static/
+saves/
+cast_report.md
+
+# Windows alternate-data-stream / scratch artifacts
+*:Zone.Identifier
+*:PG$Secure
+*:Avecto.Zone.Identifier
+*.bak

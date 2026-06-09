@@ -1,21 +1,20 @@
 """
 cast_pipeline.py — Generate or load character casts for the VN.
 
-Pipeline (per the corrected anime pipeline doc / Wave 0):
-    ComfyUI anime base gen
-      → ANIME face detect gate (yolov8x6_animeface — NOT the generic
-        face_yolov8m/n, which under-detects anime faces; retry on miss)
-      → ExpressionEditor warp (ComfyUI-AdvancedLivePortrait) for the
-        expression set — warping preserves identity, unlike inpainting
+Pipeline (mirrors the VALIDATED ComfyUI workflow
+`tools/workflows/anima_expression_sheet.json` — tested by hand on this
+machine's ComfyUI install):
+    Anima base gen (UNETLoader anima-base-v1.0 + Qwen CLIP/VAE)
+      → face detect gate (face_yolov8n via Impact-Pack; retry on miss)
+      → FaceDetailer per expression — only the face region is
+        re-generated with the expression prompt (denoise 0.55; the sheet's
+        note suggests 0.4–0.7, lower = subtler), so body/clothes/background
+        stay identical and identity holds
       → rembg isnet-anime matte → alpha sprites
-
-NOTE: AdvancedLivePortrait/InsightFace carries a NON-COMMERCIAL license
-flag. Fine for this PoC; revisit before any commercial use.
 
 Two modes:
 1. GENERATE (default): requires ComfyUI at localhost:8188 with the Anima
-   model, Impact-Pack (UltralyticsDetectorProvider) and
-   ComfyUI-AdvancedLivePortrait (ExpressionEditor) custom nodes.
+   model and Impact-Pack (UltralyticsDetectorProvider, FaceDetailer, SAM).
 2. CURATED: loads pre-made sprites from static/sprites/curated/<name>/.
 
 Same return type either way — list[CastMember] (frozen Wave 0.5 contract:
@@ -42,18 +41,115 @@ from typing import Optional
 from vn_contracts import Character, CastMember, STANDARD_EXPRESSIONS
 
 # ── Constants ─────────────────────────────────────────────────────────
-COMFY_HOST = "http://127.0.0.1:8188"
-COMFY_OUTPUT = os.path.expanduser("~/comfy/ComfyUI/output")
+# Override with ARS_FABULA_COMFY if ComfyUI runs elsewhere (e.g. on the
+# Windows side of WSL: start it with `--listen 0.0.0.0` and point this at
+# the Windows host IP).
+COMFY_HOST = os.getenv("ARS_FABULA_COMFY", "http://127.0.0.1:8188").rstrip("/")
+COMFY_OUTPUT = os.path.expanduser("~/comfy/ComfyUI/output")  # legacy; results now fetched via /view
 PROJECT_DIR = os.path.dirname(__file__)
 CURATED_DIR = os.path.join(PROJECT_DIR, "static", "sprites", "curated")
 GENERATED_DIR = os.path.join(PROJECT_DIR, "static", "sprites", "generated")
 
-QUALITY = "masterpiece, best quality, score_7, safe"
-NEGATIVE = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, bad anatomy, ugly, deformed"
+# Anima-tuned (per the June 2026 ADT/LDG synthesis): pony/score_ quality
+# tags DEGRADE Anima output; `absurdres` is the only quality tag that helps.
+# `safe` is the SFW content rating. (Override via env if you re-tune.)
+QUALITY = os.getenv("ARS_FABULA_QUALITY", "absurdres, safe")
+NEGATIVE = os.getenv("ARS_FABULA_NEGATIVE",
+                     "worst quality, low quality, blurry, jpeg artifacts, "
+                     "sepia, bad anatomy, ugly, deformed")
 
-# Anime-specific face detector (Impact-Pack UltralyticsDetectorProvider model).
-# The plan is explicit: do NOT use the generic face_yolov8m/n on anime art.
-ANIME_FACE_MODEL = "bbox/yolov8x6_animeface.pt"
+# Anima sampler/scheduler. dpm_2_ancestral won the A/B sweep on this
+# install (tools/sampler_sweep.py — best subjective quality). Env-overridable
+# to retest others without code edits, e.g.:
+#   ARS_FABULA_SAMPLER=flow_euler python app.py
+SAMPLER = os.getenv("ARS_FABULA_SAMPLER", "dpm_2_ancestral")
+SCHEDULER = os.getenv("ARS_FABULA_SCHEDULER", "simple")
+
+# Shared style block — prepended to EVERY prompt (cast + backgrounds) so the
+# whole game shares one look. Generic style descriptors by default; add
+# `@artistname` danbooru artist tags here (or via env) to narrow further.
+STYLE_TAGS = os.getenv(
+    "ARS_FABULA_STYLE",
+    "official art, anime screenshot, soft cel shading, detailed eyes, clean lineart",
+)
+
+# Full-body base canvas (taller than the old 512x768). We generate the whole
+# body for CONSISTENT framing, then crop the upper portion — full-body
+# composition lands the head at a consistent place/scale across characters,
+# which upper-body framing did not.
+BASE_WIDTH, BASE_HEIGHT = 512, 896
+# Fraction of the (matted) image height kept for the on-screen sprite,
+# measured DOWN from the head crown. ~0.62 = head + torso (waist-up).
+UPPER_BODY_FRAC = float(os.getenv("ARS_FABULA_SPRITE_FRAC", "0.62"))
+
+# ── Sprite pose block (researched danbooru framing/pose tags) ─────────
+# Locked onto EVERY identity prompt — but ONLY the essentials: framing,
+# eye contact, and a mattable background. Body attitude (slight 3/4
+# angle, hand on hip, arms crossed…) is character design and belongs in
+# the appearance tags; VN sprites are rarely dead-frontal.
+#   upper body        — waist-up framing (the VN sprite standard;
+#                       cowboy_shot = mid-thigh if taller sprites wanted)
+#   standing, looking at viewer — sprite stance + player eye contact
+#                       (eye contact holds even at a slight body angle)
+#   solo              — exactly one character
+#   simple/white background — clean rembg matte
+# Hard angle failures (profile, from behind/above/below) are handled by
+# SPRITE_NEGATIVE instead of over-constraining the positive prompt.
+# NOTE: NO weighted tags — (tag:weight) emphasis is inconsistent on Anima,
+# so everything here is plain comma-separated tags.
+SPRITE_POSE_TAGS = ("solo, full body, standing, full length, "
+                    "looking at viewer, neutral expression, "
+                    "simple background, white background")
+
+# Framing failure modes, negated for BASE generation only (the FaceDetailer
+# pass keeps the plain NEGATIVE — these would fight it). We now WANT full
+# body, so the old full-body/legs/cowboy negatives are gone; we still kill
+# wrong camera angles, multi-character, and Anima's "coomer bias"
+# (exaggerated proportions, ADT #106) so the school cast stays normal.
+SPRITE_NEGATIVE = (f"{NEGATIVE}, close-up, portrait, profile, from behind, "
+                   "from above, from below, dutch angle, multiple views, "
+                   "multiple girls, multiple boys, 2girls, 2boys, "
+                   "large breasts, wide hips, "
+                   "text, watermark, signature, out of frame")
+
+
+def _spaces_not_underscores(tags: str) -> str:
+    """Underscores break Anima's tag parser — normalize to spaces.
+    (The LLM designer can emit canonical danbooru tags like
+    'looking_at_viewer'; convert them.)"""
+    return tags.replace("_", " ")
+
+
+def build_identity_prompt(appearance_tags: str) -> str:
+    """Quality + style + the character's APPEARANCE tags + the locked pose.
+
+    appearance_tags should describe only the character (1girl/1boy, hair,
+    eyes, build, clothing, accessories, aura) — pose/framing/background
+    come from SPRITE_POSE_TAGS and must not be duplicated or contradicted.
+    """
+    tags = _spaces_not_underscores(appearance_tags.strip().rstrip(","))
+    return f"{QUALITY}, {STYLE_TAGS}. {tags}, {SPRITE_POSE_TAGS}"
+
+
+def _face_anchor(identity_or_tags: str) -> str:
+    """Pull the must-preserve face traits (eye + hair colour) out of a
+    character's tags, so the FaceDetailer keeps them across expressions.
+
+    Returns e.g. "red eyes, silver hair" (either part may be missing)."""
+    parts = []
+    m = re.search(r'([a-z]+(?:\s[a-z]+)?)\s+eyes', identity_or_tags.lower())
+    if m:
+        parts.append(f"{m.group(1).strip()} eyes")
+    m = re.search(r'([a-z]+(?:\s[a-z]+)?)\s+hair', identity_or_tags.lower())
+    if m:
+        parts.append(f"{m.group(1).strip()} hair")
+    return ", ".join(parts)
+
+# Face detector (Impact-Pack UltralyticsDetectorProvider model) — taken
+# verbatim from the validated expression sheet, which confirmed it detects
+# Anima-style faces on this install. If detection ever misses, try an
+# anime-specific model (e.g. yolov8x6_animeface.pt) here.
+ANIME_FACE_MODEL = "bbox/face_yolov8n.pt"
 
 # How many times to regenerate the base (seed bump) if no anime face is found
 FACE_GATE_RETRIES = 2
@@ -62,10 +158,11 @@ FACE_GATE_RETRIES = 2
 
 PRESET_CHARACTERS: dict[str, dict] = {
     "yuki": {
-        "identity_prompt": (
-            f"{QUALITY}. 1girl, yuki tanaka, long silver hair, straight hair, "
+        "identity_prompt": build_identity_prompt(
+            "1girl, yuki tanaka, long silver hair, straight hair, "
             "red eyes, fair skin, flat chest, high school uniform, white shirt, "
-            "blue skirt, red ribbon, portrait, upper body, looking at viewer, neutral face"
+            "blue skirt, red ribbon, gentle expression, quiet reserved aura, "
+            "soft lighting"
         ),
         "personality": "Quiet and reserved but deeply caring. Speaks in short sentences. "
                        "Notices small details about others. Opens up slowly. "
@@ -75,10 +172,11 @@ PRESET_CHARACTERS: dict[str, dict] = {
         "seed": 42,
     },
     "haruki": {
-        "identity_prompt": (
-            f"{QUALITY}. 1boy, haruki tanaka, short messy black hair, "
+        "identity_prompt": build_identity_prompt(
+            "1boy, haruki tanaka, short messy black hair, "
             "brown eyes, fair skin, high school uniform, white shirt, "
-            "loose tie, portrait, upper body, looking at viewer, neutral face, tsundere"
+            "loose tie, sleeves rolled up, confident smirk, energetic vibe, "
+            "mischievous aura"
         ),
         "personality": "Outgoing and energetic with a mischievous streak. "
                        "Teases people he likes. Loyal to friends. "
@@ -88,10 +186,10 @@ PRESET_CHARACTERS: dict[str, dict] = {
         "seed": 43,
     },
     "sakura": {
-        "identity_prompt": (
-            f"{QUALITY}. 1girl, sakura haruno, long pink hair, side ponytail, "
-            "green eyes, fair skin, high school uniform, white shirt, "
-            "pink bow, portrait, upper body, looking at viewer, smile, genki"
+        "identity_prompt": build_identity_prompt(
+            "1girl, sakura haruno, long pink hair, side ponytail, "
+            "green eyes, fair skin, freckles, high school uniform, white shirt, "
+            "pink bow, cheerful genki energy, bubbly"
         ),
         "personality": "Cheerful and energetic genki girl. Always smiling. "
                        "Best friend energy. Gives great hugs. "
@@ -101,10 +199,10 @@ PRESET_CHARACTERS: dict[str, dict] = {
         "seed": 44,
     },
     "ryo": {
-        "identity_prompt": (
-            f"{QUALITY}. 1boy, ryo akira, short blue hair, sharp eyes, "
-            "tall, cool expression, high school uniform slightly disheveled, "
-            "portrait, upper body, looking at viewer, calm face, cool"
+        "identity_prompt": build_identity_prompt(
+            "1boy, ryo akira, short blue hair, sharp eyes, "
+            "tall build, high school uniform, blazer, "
+            "cool aura, sharp gaze, composed"
         ),
         "personality": "Cool and aloof on the surface. Secretly a huge romantic. "
                        "Gives surprisingly good advice. "
@@ -115,105 +213,356 @@ PRESET_CHARACTERS: dict[str, dict] = {
     },
 }
 
-# Kept for prompt-based pipelines and the contact sheet (describes the
-# *intent* of each expression; the warp pipeline uses EXPRESSION_PARAMS).
+# Expression prompts fed to the FaceDetailer (per the validated expression
+# sheet's notes — embarrassed uses spiral eyes, matching the curated art).
 EXPRESSION_TAGS = {
     "neutral": "neutral expression, looking at viewer, relaxed",
     "smile": "smile, open mouth, happy, looking at viewer, blush",
-    "laugh": "laughing, open mouth, eyes closed, happy, joyful",
+    # NOTE: no "eyes closed" tag — a fully closed-eye laughing anime face is
+    # what face_yolov8n fails to detect, so FaceDetailer skips it and "laugh"
+    # comes out unchanged/broken. (We can't soften it with a weight either —
+    # weighted tags are unreliable on Anima.) Open-eyed laughing reads fine.
+    "laugh": "laughing, open mouth, wide smile, happy, joyful, blush",
     "sad": "sad, downturned eyebrows, tears, wet eyes, looking down",
     "angry": "angry, furrowed eyebrows, glare, gritting teeth, frown",
     "surprised": "surprised, wide eyes, open mouth, shocked, eyebrows raised",
-    "embarrassed": "embarrassed, heavy blush, averted eyes, sweatdrop, looking away",
+    "embarrassed": "embarrassed, heavy blush, (@_@), spiral eyes, averted eyes, sweatdrop",
 }
 
-# ExpressionEditor (AdvancedLivePortrait) parameter sets per expression.
-# These WARP the base face — identity is preserved by construction.
-# All unset params default to 0. Tune by eye via the contact sheet.
-EXPRESSION_PARAMS: dict[str, dict] = {
-    "neutral":     {},
-    "smile":       {"smile": 1.0, "eyebrow": 5.0, "blink": 2.0},
-    "laugh":       {"smile": 1.3, "aaa": 30.0, "blink": 18.0, "eyebrow": 6.0},
-    "sad":         {"smile": -0.3, "eyebrow": -10.0, "blink": 6.0,
-                    "rotate_pitch": 6.0, "pupil_y": -4.0},
-    "angry":       {"smile": -0.2, "eyebrow": -14.0, "blink": 3.0, "eee": 8.0},
-    "surprised":   {"blink": -12.0, "eyebrow": 12.0, "aaa": 25.0},
-    "embarrassed": {"smile": 0.5, "blink": 7.0, "eyebrow": -3.0,
-                    "rotate_yaw": -9.0, "pupil_x": 7.0},
-}
+# FaceDetailer strength — the sheet's note: 0.4–0.7, lower = subtler.
+EXPRESSION_DENOISE = 0.55
 
-# Defaults for ExpressionEditor widgets not covered by EXPRESSION_PARAMS
-_EXPRESSION_EDITOR_DEFAULTS = {
-    "rotate_pitch": 0.0, "rotate_yaw": 0.0, "rotate_roll": 0.0,
-    "blink": 0.0, "eyebrow": 0.0, "wink": 0.0,
-    "pupil_x": 0.0, "pupil_y": 0.0,
-    "aaa": 0.0, "eee": 0.0, "woo": 0.0, "smile": 0.0,
-    "src_ratio": 1.0, "sample_ratio": 1.0,
-    "sample_parts": "OnlyExpression", "crop_factor": 1.7,
-}
+# Model files (must match the names installed in ComfyUI — taken verbatim
+# from the validated workflow).
+UNET_NAME = "anima-base-v1.0.safetensors"
+CLIP_NAME = "qwen_3_06b_base.safetensors"
+VAE_NAME = "qwen_image_vae.safetensors"
+SAM_NAME = "sam_vit_b_01ec64.pth"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Character design — concept phrase -> appearance tags (LLM or heuristic)
+# ═══════════════════════════════════════════════════════════════════════
+
+FEMALE_VOICES = ["af_bella", "af_sky", "af_nicole", "af_sarah"]
+MALE_VOICES = ["am_michael", "am_adam"]
+
+# Keyword fallbacks for when no LLM is reachable — coarse but coherent.
+_CONCEPT_DESIGNS = [
+    (("childhood friend",), "girl",
+     "1girl, brown hair, medium hair, ahoge, warm brown eyes, fair skin, "
+     "school uniform, white shirt, red ribbon, hands behind back, "
+     "cheerful aura, approachable", "childhood friend"),
+    (("genki", "energetic", "cheerful"), "girl",
+     "1girl, orange hair, short hair, bright eyes, fang, school uniform, "
+     "loose socks, hand on hip, energetic aura, sporty", "genki classmate"),
+    (("shy", "bookworm", "quiet", "library"), "girl",
+     "1girl, dark blue hair, long hair, blunt bangs, glasses, purple eyes, "
+     "cardigan, school uniform, holding book, head tilt, timid aura",
+     "shy bookworm"),
+    (("cool", "aloof", "senpai", "stoic"), "boy",
+     "1boy, black hair, short hair, sharp grey eyes, tall, school uniform, "
+     "blazer, hands in pockets, composed, cool aura", "cool senpai"),
+    (("delinquent", "rebel", "punk"), "boy",
+     "1boy, blonde hair, slicked back hair, sharp eyes, open collar, "
+     "school uniform, untucked shirt, piercing, hands in pockets, "
+     "rough aura", "delinquent"),
+    (("class rep", "president", "strict"), "girl",
+     "1girl, black hair, long hair, hime cut, serious eyes, school uniform, "
+     "armband, own hands together, neat, dignified aura",
+     "class representative"),
+    (("gyaru", "gal",), "girl",
+     "1girl, blonde hair, long wavy hair, tan skin, nail polish, "
+     "school uniform, loose ribbon, accessories, hand on hip, "
+     "confident aura", "gyaru"),
+    (("athlete", "sporty", "club"), "boy",
+     "1boy, brown hair, very short hair, tan skin, athletic build, "
+     "school uniform, sports towel, arms crossed, energetic aura",
+     "athlete"),
+]
+
+_DEFAULT_DESIGN = ("girl",
+                   "1girl, {hair} hair, medium hair, expressive eyes, fair skin, "
+                   "school uniform, white shirt, distinctive accessory",
+                   "classmate")
+_HAIR_ROTATION = ["chestnut", "ash blonde", "teal", "auburn", "lavender", "black"]
+
+
+def _stable_seed(*parts: str) -> int:
+    import zlib
+    return zlib.crc32("|".join(parts).encode("utf-8")) & 0x7FFFFFFF
+
+
+def _heuristic_design(name: str, concept: str) -> dict:
+    """No-LLM fallback: map concept keywords to a coherent design."""
+    low = (concept or "").lower()
+    if any(k in low for k in ("boy", "male", "guy", "him", "prince", "butler")):
+        forced_gender = "boy"
+    elif any(k in low for k in ("girl", "female", "her", "princess", "maid")):
+        forced_gender = "girl"
+    else:
+        forced_gender = None
+
+    for keywords, gender, tags, role in _CONCEPT_DESIGNS:
+        if any(k in low for k in keywords):
+            if forced_gender and forced_gender != gender:
+                tags = tags.replace("1girl", "1boy") if forced_gender == "boy" \
+                    else tags.replace("1boy", "1girl")
+                gender = forced_gender
+            return {"gender": gender, "tags": tags, "role": role,
+                    "personality": concept or f"{name} — {role}."}
+
+    gender, tags, role = _DEFAULT_DESIGN
+    gender = forced_gender or gender
+    hair = _HAIR_ROTATION[_stable_seed(name, concept) % len(_HAIR_ROTATION)]
+    tags = tags.format(hair=hair)
+    if gender == "boy":
+        tags = tags.replace("1girl", "1boy")
+    return {"gender": gender, "tags": tags, "role": role,
+            "personality": concept or f"{name}, a {role}."}
+
+
+def design_character(name: str, concept: str) -> dict:
+    """Concept phrase -> {gender, tags, personality, role}.
+
+    Uses the story LLM when reachable (CHARACTER_DESIGNER_PROMPT,
+    strict-JSON reply); falls back to the keyword heuristics so the
+    casting beat never blocks on a missing server.
+    """
+    try:
+        from model_client import get_model, ModelConfig
+        from vn_prompt import CHARACTER_DESIGNER_PROMPT
+        cfg = ModelConfig.from_env()
+        if cfg.backend != "mock":
+            client = get_model(cfg)
+            if client.health():
+                raw = client.generate([
+                    {"role": "system", "content": CHARACTER_DESIGNER_PROMPT},
+                    {"role": "user", "content": f"Name: {name}\nConcept: {concept}"},
+                ]) or ""
+                start, end = raw.find("{"), raw.rfind("}")
+                if start != -1 and end > start:
+                    data = json.loads(raw[start:end + 1])
+                    tags = str(data.get("tags", "")).strip()
+                    if tags and ("1girl" in tags or "1boy" in tags):
+                        return {
+                            "gender": "boy" if "1boy" in tags else "girl",
+                            "tags": tags,
+                            "personality": str(data.get("personality", concept)).strip()
+                                           or concept,
+                            "role": str(data.get("role", "classmate")).strip()
+                                    or "classmate",
+                        }
+                print(f"  [cast] LLM design for '{name}' unusable — using heuristics")
+    except Exception as e:
+        print(f"  [cast] LLM design failed for '{name}' ({e}) — using heuristics")
+    return _heuristic_design(name, concept)
+
+
+def build_custom_specs(cards: list[dict]) -> list[tuple[str, dict]]:
+    """Turn UI character cards into (cache_key, preset) specs.
+
+    Card fields: name (required), concept (regular mode), tags (advanced
+    mode — overrides the designer; pose block still appended).
+    The cache key embeds a hash of the final prompt, so editing a
+    character's design automatically invalidates their sprite cache.
+    """
+    import hashlib
+    specs: list[tuple[str, dict]] = []
+    voice_idx = {"girl": 0, "boy": 0}
+
+    for i, card in enumerate(cards):
+        name = (card.get("name") or "").strip()
+        if not name:
+            continue
+        concept = (card.get("concept") or "").strip()
+        adv_tags = (card.get("tags") or "").strip()
+
+        if adv_tags:   # advanced mode: tags are authoritative
+            gender = "boy" if "1boy" in adv_tags else "girl"
+            design = {"gender": gender, "tags": adv_tags,
+                      "personality": concept or f"{name}.",
+                      "role": concept.split(",")[0][:24] if concept else "custom"}
+        else:
+            design = design_character(name, concept)
+
+        pool = MALE_VOICES if design["gender"] == "boy" else FEMALE_VOICES
+        voice = pool[voice_idx[design["gender"]] % len(pool)]
+        voice_idx[design["gender"]] += 1
+
+        identity_prompt = build_identity_prompt(design["tags"])
+        slug = "".join(ch for ch in name.lower() if ch.isalnum()) or f"char{i}"
+        key = f"{slug}_{hashlib.md5(identity_prompt.encode()).hexdigest()[:8]}"
+
+        specs.append((key, {
+            "name": name,
+            "identity_prompt": identity_prompt,
+            "personality": design["personality"],
+            "voice_id": voice,
+            "role": design["role"],
+            "seed": _stable_seed(name, identity_prompt),
+        }))
+    return specs
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # ComfyUI helpers
 # ═══════════════════════════════════════════════════════════════════════
 
+_COMFY_SESSION = None
+
+
+def _session():
+    """Shared requests session for ComfyUI.
+
+    trust_env=False is the important part: it makes requests IGNORE
+    http_proxy/https_proxy environment variables (common on corporate
+    machines), which otherwise hijack even 127.0.0.1 traffic and kill
+    POSTs with [Errno 32] Broken pipe while GETs appear to work.
+    """
+    global _COMFY_SESSION
+    if _COMFY_SESSION is None:
+        import requests
+        s = requests.Session()
+        s.trust_env = False
+        _COMFY_SESSION = s
+    return _COMFY_SESSION
+
+
 def _comfy_upload(path: str, name: str) -> dict:
-    """Upload an image to ComfyUI's input folder."""
+    """Upload an image to ComfyUI's input folder.
+
+    Uses `requests` with a proper multipart encoder — the previous
+    hand-rolled multipart body could make aiohttp drop the connection
+    mid-write (the "broken pipe"). `overwrite=true` matters: without it,
+    re-uploading the same filename makes ComfyUI save a renamed copy and
+    the workflow's LoadImage silently keeps reading the OLD image.
+    """
     with open(path, "rb") as f:
-        data = f.read()
-    boundary = "----BoundaryMA4"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="image"; filename="{name}"\r\n'
-        f"Content-Type: image/png\r\n\r\n"
-    ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
-    req = urllib.request.Request(
-        f"{COMFY_HOST}/upload/image",
-        data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())
+        resp = _session().post(
+            f"{COMFY_HOST}/upload/image",
+            files={"image": (name, f, "image/png")},
+            data={"overwrite": "true"},
+            timeout=60,
+        )
+    if not resp.ok:
+        raise RuntimeError(
+            f"ComfyUI upload of '{name}' failed: HTTP {resp.status_code} — {resp.text[:300]}")
+    return resp.json()
 
 
 def _comfy_submit(workflow: dict, client_id: str) -> str:
-    """Submit a workflow to ComfyUI and return the prompt_id."""
-    payload = json.dumps({"prompt": workflow, "client_id": client_id}).encode()
-    req = urllib.request.Request(
+    """Submit a workflow to ComfyUI and return the prompt_id.
+
+    On a 400, surfaces ComfyUI's validation error (bad node class, missing
+    model file, wrong input name) instead of dying with a transport error.
+    """
+    resp = _session().post(
         f"{COMFY_HOST}/prompt",
-        data=payload,
-        headers={"Content-Type": "application/json"},
+        json={"prompt": workflow, "client_id": client_id},
+        timeout=60,
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())["prompt_id"]
+    if not resp.ok:
+        raise RuntimeError(
+            f"ComfyUI rejected workflow '{client_id}': HTTP {resp.status_code} — {resp.text[:1000]}")
+    return resp.json()["prompt_id"]
 
 
-def _comfy_wait(prompt_id: str, timeout: int = 180) -> Optional[str]:
-    """Wait for a ComfyUI prompt to complete. Returns output filename or None."""
+def _comfy_wait(prompt_id: str, timeout: int = 180) -> Optional[dict]:
+    """Wait for a ComfyUI prompt to finish.
+
+    Returns the first output image's info dict ({filename, subfolder, type})
+    or None. Doesn't rely on the 'completed' status flag (absent in some
+    ComfyUI versions) — the presence of outputs is the ground truth — and
+    prints execution errors from the history so failures aren't silent.
+    """
     for i in range(timeout // 2):
         time.sleep(2)
         try:
-            with urllib.request.urlopen(f"{COMFY_HOST}/history/{prompt_id}") as hr:
-                hist = json.loads(hr.read())
+            hist = _session().get(f"{COMFY_HOST}/history/{prompt_id}", timeout=15).json()
         except Exception:
             continue
-        if prompt_id in hist and hist[prompt_id].get("status", {}).get("completed"):
-            outputs = hist[prompt_id].get("outputs", {})
-            for nid, nout in outputs.items():
-                for img in nout.get("images", []):
-                    return img["filename"]
+        if prompt_id not in hist:
+            continue
+        entry = hist[prompt_id]
+
+        # Outputs present → done, regardless of what status says
+        for nout in (entry.get("outputs") or {}).values():
+            for img in nout.get("images", []):
+                return img
+
+        # Surface execution errors instead of timing out silently
+        status = entry.get("status") or {}
+        for msg in status.get("messages", []):
+            if isinstance(msg, (list, tuple)) and msg and msg[0] == "execution_error":
+                detail = msg[1] if len(msg) > 1 else {}
+                print(f"  [cast] ComfyUI execution error in node "
+                      f"{detail.get('node_type', '?')}: "
+                      f"{detail.get('exception_message', detail)}")
+                return None
+        if status.get("status_str") == "error":
+            print(f"  [cast] ComfyUI reported an error for prompt {prompt_id}: {status}")
             return None
+        if status.get("completed"):
+            return None   # finished with no image outputs
+    print(f"  [cast] Timed out waiting for prompt {prompt_id}")
     return None
 
 
-def _comfy_health() -> bool:
-    """Check if ComfyUI is reachable."""
+def _comfy_fetch_image(img_info: dict, dest_path: str) -> Optional[str]:
+    """Download a generated image from ComfyUI via its /view endpoint.
+
+    This replaces copying from a guessed output directory on disk — which
+    breaks whenever ComfyUI lives somewhere else (or SaveImage used a
+    subfolder). Works regardless of where/how ComfyUI is installed.
+    """
     try:
-        req = urllib.request.Request(f"{COMFY_HOST}/system_stats")
-        with urllib.request.urlopen(req, timeout=3):
-            return True
+        resp = _session().get(
+            f"{COMFY_HOST}/view",
+            params={
+                "filename": img_info.get("filename", ""),
+                "subfolder": img_info.get("subfolder", ""),
+                "type": img_info.get("type", "output"),
+            },
+            timeout=60,
+        )
+        if not resp.ok:
+            print(f"  [cast] /view fetch failed: HTTP {resp.status_code} for {img_info}")
+            return None
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        with open(dest_path, "wb") as f:
+            f.write(resp.content)
+        return dest_path
+    except Exception as e:
+        print(f"  [cast] /view fetch failed for {img_info}: {e}")
+        return None
+
+
+def _comfy_health() -> bool:
+    """Check if ComfyUI is reachable (proxy-bypassing, like all other calls)."""
+    try:
+        return _session().get(f"{COMFY_HOST}/system_stats", timeout=3).ok
     except Exception:
         return False
+
+
+def comfy_free_vram() -> bool:
+    """Unload ComfyUI's models from VRAM via its /free endpoint.
+
+    Called after a cast bake so the scene LLM has the GPU to itself.
+    ComfyUI reloads its models lazily on the next /prompt, so this is safe
+    to call between casting beats. No-op if ComfyUI isn't reachable.
+    """
+    try:
+        r = _session().post(f"{COMFY_HOST}/free",
+                            json={"unload_models": True, "free_memory": True},
+                            timeout=20)
+        if r.ok:
+            print("[vram] ComfyUI models unloaded (/free)")
+            return True
+    except Exception as e:
+        print(f"[vram] ComfyUI /free failed (ignored): {e}")
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -234,27 +583,24 @@ def _generate_base(character_key: str, preset: dict, out_dir: str,
         "1": {"inputs": {"filename_prefix": f"base_{character_key}", "images": ["8", 0]}, "class_type": "SaveImage"},
         "8": {"inputs": {"samples": ["19", 0], "vae": ["15", 0]}, "class_type": "VAEDecode"},
         "11": {"inputs": {"text": preset["identity_prompt"], "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
-        "12": {"inputs": {"text": NEGATIVE, "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
-        "15": {"inputs": {"vae_name": "qwen_image_vae.safetensors"}, "class_type": "VAELoader"},
+        "12": {"inputs": {"text": SPRITE_NEGATIVE, "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
+        "15": {"inputs": {"vae_name": VAE_NAME}, "class_type": "VAELoader"},
         "19": {"inputs": {
             "seed": seed, "steps": 30, "cfg": 4.0,
-            "sampler_name": "er_sde", "scheduler": "simple", "denoise": 1.0,
+            "sampler_name": SAMPLER, "scheduler": SCHEDULER, "denoise": 1.0,
             "model": ["44", 0], "positive": ["11", 0], "negative": ["12", 0],
             "latent_image": ["28", 0],
         }, "class_type": "KSampler"},
-        "28": {"inputs": {"width": 512, "height": 768, "batch_size": 1}, "class_type": "EmptyLatentImage"},
-        "44": {"inputs": {"unet_name": "anime-base-v1.0.safetensors", "weight_dtype": "default"}, "class_type": "UNETLoader"},
-        "45": {"inputs": {"clip_name": "qwen_3_06b_base.safetensors", "type": "stable_diffusion", "device": "default"}, "class_type": "CLIPLoader"},
+        "28": {"inputs": {"width": BASE_WIDTH, "height": BASE_HEIGHT, "batch_size": 1}, "class_type": "EmptyLatentImage"},
+        "44": {"inputs": {"unet_name": UNET_NAME, "weight_dtype": "default"}, "class_type": "UNETLoader"},
+        "45": {"inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}, "class_type": "CLIPLoader"},
     }
 
     pid = _comfy_submit(workflow, f"base_{character_key}")
     result = _comfy_wait(pid)
-    if result:
-        src = os.path.join(COMFY_OUTPUT, result)
-        if os.path.exists(src):
-            shutil.copy2(src, out_path)
-            print(f"  [cast] Generated base for {character_key} (seed={seed}): {out_path}")
-            return out_path
+    if result and _comfy_fetch_image(result, out_path):
+        print(f"  [cast] Generated base for {character_key} (seed={seed}): {out_path}")
+        return out_path
     return None
 
 
@@ -273,7 +619,11 @@ def _detect_anime_face(base_path: str, character_key: str) -> Optional[bool]:
         False — no face detected (caller should retry base gen)
         None  — gate unavailable (node/model missing); caller proceeds
     """
-    _comfy_upload(base_path, f"{character_key}_base.png")
+    try:
+        _comfy_upload(base_path, f"{character_key}_base.png")
+    except Exception as e:
+        print(f"  [cast] Face gate upload failed ({e}); proceeding without gate")
+        return None
 
     workflow = {
         "10": {"inputs": {"image": f"{character_key}_base.png"}, "class_type": "LoadImage"},
@@ -299,7 +649,10 @@ def _detect_anime_face(base_path: str, character_key: str) -> Optional[bool]:
         print(f"  [cast] Face gate produced no output; proceeding without gate")
         return None
 
-    mask_path = os.path.join(COMFY_OUTPUT, result)
+    mask_path = os.path.join(GENERATED_DIR, character_key, "_facegate_mask.png")
+    if not _comfy_fetch_image(result, mask_path):
+        print(f"  [cast] Face gate mask fetch failed; proceeding without gate")
+        return None
     try:
         from PIL import Image
         with Image.open(mask_path) as img:
@@ -329,16 +682,18 @@ def _generate_base_with_face_gate(character_key: str, preset: dict, out_dir: str
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Expression generation via ExpressionEditor warp (AdvancedLivePortrait)
+# Expression generation via FaceDetailer (the validated expression sheet)
 # ═══════════════════════════════════════════════════════════════════════
 
-def _generate_expression(base_path: str, character_key: str, expr_name: str) -> Optional[str]:
-    """Generate a single expression by WARPING the base face with the
-    ExpressionEditor node (ComfyUI-AdvancedLivePortrait).
+def _generate_expression(base_path: str, character_key: str, expr_name: str,
+                         expr_tags: str, seed: int, anchor: str = "") -> Optional[str]:
+    """Generate a single expression with the validated FaceDetailer sheet
+    (tools/workflows/anima_expression_sheet.json, API form).
 
-    This is the Wave-0-validated approach: warping moves facial landmarks
-    on the SAME image, so identity holds by construction (vs. inpainting,
-    which re-draws the face and can drift).
+    Only the detected face region is re-generated with the expression
+    prompt — body, clothes and background stay identical, which is what
+    preserves identity across the set. `anchor` (eye/hair colour) is folded
+    into the prompt so those traits don't drift across expressions.
 
     Returns path to the expression PNG, or None on failure.
     """
@@ -346,32 +701,68 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str) -> 
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"{character_key}_{expr_name}.png")
 
-    # neutral == the base itself, just copied through
+    # neutral == the base itself, just copied through (base prompts are
+    # already neutral-faced; copying beats re-generating for identity)
     if expr_name == "neutral":
         shutil.copy2(base_path, out_path)
         return out_path
 
     _comfy_upload(base_path, f"{character_key}_base.png")
 
-    params = dict(_EXPRESSION_EDITOR_DEFAULTS)
-    params.update(EXPRESSION_PARAMS.get(expr_name, {}))
-
+    anchor_part = f"{anchor}, " if anchor else ""
+    expr_prompt = f"{QUALITY}, {STYLE_TAGS}. {anchor_part}{expr_tags}"
     workflow = {
         "10": {"inputs": {"image": f"{character_key}_base.png"}, "class_type": "LoadImage"},
+        "11": {"inputs": {"text": expr_prompt, "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
+        "12": {"inputs": {"text": NEGATIVE, "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
+        "15": {"inputs": {"vae_name": VAE_NAME}, "class_type": "VAELoader"},
+        "44": {"inputs": {"unet_name": UNET_NAME, "weight_dtype": "default"}, "class_type": "UNETLoader"},
+        "45": {"inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}, "class_type": "CLIPLoader"},
+        "70": {"inputs": {"model_name": ANIME_FACE_MODEL}, "class_type": "UltralyticsDetectorProvider"},
+        "73": {"inputs": {"model_name": SAM_NAME, "device_mode": "AUTO"}, "class_type": "SAMLoader"},
         "80": {"inputs": {
-            "src_image": ["10", 0],
-            **params,
-        }, "class_type": "ExpressionEditor"},
+            "image": ["10", 0], "model": ["44", 0], "clip": ["45", 0], "vae": ["15", 0],
+            "guide_size": 384, "guide_size_for": True, "max_size": 768,
+            "seed": seed, "steps": 20, "cfg": 4.0,
+            "sampler_name": SAMPLER, "scheduler": SCHEDULER,
+            "positive": ["11", 0], "negative": ["12", 0],
+            "denoise": EXPRESSION_DENOISE, "feather": 8,
+            "noise_mask": True, "force_inpaint": True,
+            # 0.3 (was 0.4): catch harder-to-detect faces (laugh/squint)
+            "bbox_threshold": 0.3, "bbox_dilation": 15, "bbox_crop_factor": 3.0,
+            "sam_detection_hint": "center-1", "sam_dilation": 0,
+            "sam_threshold": 0.93, "sam_bbox_expansion": 10,
+            "sam_mask_hint_threshold": 0.7, "sam_mask_hint_use_negative": "False",
+            "drop_size": 10, "wildcard": "", "cycle": 1,
+            "bbox_detector": ["70", 0], "sam_model_opt": ["73", 0],
+        }, "class_type": "FaceDetailer"},
         "1": {"inputs": {"filename_prefix": f"{character_key}_{expr_name}", "images": ["80", 0]}, "class_type": "SaveImage"},
     }
 
-    pid = _comfy_submit(workflow, f"{character_key}_{expr_name}")
+    pid = _comfy_submit(workflow, f"{character_key}_{expr_name}_{seed}")
     result = _comfy_wait(pid, timeout=200)
-    if result:
-        src = os.path.join(COMFY_OUTPUT, result)
-        if os.path.exists(src):
-            shutil.copy2(src, out_path)
-            return out_path
+    if result and _comfy_fetch_image(result, out_path):
+        return out_path
+    return None
+
+
+# Per-expression retry count on failure (bumped seed). 0 = no retry.
+EXPRESSION_RETRIES = 1
+
+
+def _generate_expression_retry(base_path: str, character_key: str,
+                               expr_name: str, expr_tags: str,
+                               seed: int, anchor: str = "") -> Optional[str]:
+    """Generate one expression, retrying with a bumped seed if it fails
+    (transient face-detect miss / empty output). Self-heals the occasional
+    'laugh didn't generate' without re-running the whole cast."""
+    for attempt in range(EXPRESSION_RETRIES + 1):
+        path = _generate_expression(base_path, character_key, expr_name,
+                                    expr_tags, seed + attempt * 1000, anchor=anchor)
+        if path:
+            return path
+        if attempt < EXPRESSION_RETRIES:
+            print(f"    {expr_name}: empty/failed — retrying with bumped seed")
     return None
 
 
@@ -391,38 +782,131 @@ def _get_rembg_session():
     return _REMBG_SESSION
 
 
+_REMBG_WARNED = False
+
+
+def _warn_rembg_missing(detail: str) -> None:
+    """One-time, prominent, actionable warning — silent failure here is why
+    sprites came out with white backgrounds."""
+    global _REMBG_WARNED
+    if _REMBG_WARNED:
+        return
+    _REMBG_WARNED = True
+    print("\n" + "!" * 64)
+    print("  [cast] BACKGROUND REMOVAL DID NOT RUN — sprites will keep their")
+    print(f"         white background. Reason: {detail}")
+    print("         Install it INTO THIS venv (rembg + an onnxruntime):")
+    print("           .venv/bin/pip install rembg onnxruntime")
+    print("         (use onnxruntime-gpu instead for CUDA). The isnet-anime")
+    print("         model at ~/.u2net/isnet-anime.pth is already present.")
+    print("!" * 64 + "\n")
+
+
+def _has_transparency(path: str) -> bool:
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            if img.mode not in ("RGBA", "LA", "PA"):
+                return False
+            alpha = img.convert("RGBA").getchannel("A").getextrema()
+        return alpha[0] < 250   # some pixel is meaningfully transparent
+    except Exception:
+        return False
+
+
 def _remove_bg(input_path: str) -> Optional[str]:
     """Remove background using rembg with the isnet-anime matte.
 
     Overwrites the input in-place with an RGBA PNG. Uses the rembg 2.x
     session API (`new_session("isnet-anime")` — the old `model_name=`
-    kwarg no longer exists and would silently skip matting).
+    kwarg no longer exists and would silently skip matting). Verifies the
+    output actually became transparent; warns loudly if not.
     """
     out_path = input_path
     try:
         from rembg import remove
+    except ImportError:
+        _warn_rembg_missing("`import rembg` failed (not installed in this venv)")
+        return input_path
+
+    try:
         with open(input_path, "rb") as f:
             img_data = f.read()
         try:
             result = remove(img_data, session=_get_rembg_session())
         except Exception as e:
-            # Last-resort fallback: default model (u2net) — better than no alpha
-            print(f"  [cast] isnet-anime session failed ({e}); using default rembg model")
+            print(f"  [cast] isnet-anime session failed ({e}); trying default rembg model")
             result = remove(img_data)
         with open(out_path, "wb") as f:
             f.write(result)
+        if not _has_transparency(out_path):
+            _warn_rembg_missing("rembg ran but produced no transparency "
+                                "(onnxruntime missing/broken, or model failed to load)")
         return out_path
-    except ImportError:
-        print("  [cast] rembg not available, skipping background removal")
-        return input_path
     except Exception as e:
-        print(f"  [cast] rembg error: {e}")
+        _warn_rembg_missing(f"rembg error: {e}")
         return input_path
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # Public API
 # ═══════════════════════════════════════════════════════════════════════
+
+def _frame_upper_body(char_dir: str, key: str,
+                      frac: Optional[float] = None, pad: int = 12) -> None:
+    """Crop a character's full-body renders to a consistent waist-up sprite.
+
+    Vertical: anchored on the head crown (union alpha-bbox TOP) and a FIXED
+    height (frac × image height) down from it — so the head sits at the same
+    place and the framing is identical across the whole cast.
+    Horizontal: the character's union extent + padding (trims side
+    whitespace; widths may differ per character, which is fine — the UI
+    height-locks sprites).
+    The SAME box is applied to all 7 expressions so they don't jump on swap.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return
+    frac = UPPER_BODY_FRAC if frac is None else frac
+
+    paths = [os.path.join(char_dir, f"{key}_{e}.png") for e in STANDARD_EXPRESSIONS]
+    paths = [p for p in paths if os.path.exists(p)]
+    if not paths:
+        return
+
+    # Union alpha bbox across the set → stable crown + horizontal extent
+    union = None
+    H = W = 0
+    for p in paths:
+        with Image.open(p) as img:
+            rgba = img.convert("RGBA")
+            W, H = rgba.size
+            bbox = rgba.getchannel("A").getbbox()
+        if bbox:
+            union = bbox if union is None else (
+                min(union[0], bbox[0]), min(union[1], bbox[1]),
+                max(union[2], bbox[2]), max(union[3], bbox[3]),
+            )
+    if union is None:
+        return
+
+    crown_y = max(0, union[1] - pad)
+    crop_h = int(H * frac)
+    bottom = min(H, crown_y + crop_h)
+    left = max(0, union[0] - pad)
+    right = min(W, union[2] + pad)
+    box = (left, crown_y, right, bottom)
+
+    for p in paths:
+        with Image.open(p) as img:
+            img.convert("RGBA").crop(box).save(p)
+    print(f"  [cast] Framed {len(paths)} sprites for {key} (waist-up) to {box}")
+
+
+# Back-compat alias: tools/recrop_sprites.py calls _autocrop_sprite_set.
+_autocrop_sprite_set = _frame_upper_body
+
 
 def generate_cast(preferences: Optional[dict] = None) -> list[CastMember]:
     """Generate a full cast via ComfyUI (or fall back to curated).
@@ -440,24 +924,60 @@ def generate_cast(preferences: Optional[dict] = None) -> list[CastMember]:
     Returns:
         list[CastMember] with expression_map filled (frozen contract).
     """
-    # Decide character keys
-    if preferences and "preset" in preferences:
-        preset_name = preferences["preset"]
-        char_keys = _get_preset_chars(preset_name)
-    elif preferences and "characters" in preferences:
-        char_keys = preferences["characters"]
+    # Decide the cast specs: custom cards take precedence over presets.
+    # VRAM choreography (LLM and diffusion can't co-reside):
+    #   custom mode needs the design LLM first, so free ComfyUI to make room
+    #   for it; preset mode designs nothing and skips that step.
+    if preferences and preferences.get("custom_cast"):
+        comfy_free_vram()                       # room for the design LLM
+        try:                                    # bring the LLM up if a prior bake killed it
+            from model_client import ensure_llm
+            ensure_llm()
+        except Exception as e:
+            print(f"[cast] ensure_llm before design failed ({e}); designing with heuristics")
+        specs = build_custom_specs(preferences["custom_cast"])   # LLM designs
+        if not specs:
+            specs = [(k, PRESET_CHARACTERS[k]) for k in ["yuki", "haruki", "sakura"]]
     else:
-        char_keys = ["yuki", "haruki", "sakura"]  # Default 3-character cast
+        if preferences and "preset" in preferences:
+            char_keys = _get_preset_chars(preferences["preset"])
+        elif preferences and "characters" in preferences:
+            char_keys = preferences["characters"]
+        else:
+            char_keys = ["yuki", "haruki", "sakura"]  # Default 3-character cast
+        specs = [(k, PRESET_CHARACTERS[k]) for k in char_keys
+                 if k in PRESET_CHARACTERS]
 
     # Try ComfyUI generation
     comfy_ok = _comfy_health()
     if comfy_ok:
+        # Only a real bake loads diffusion models — a fully-cached reuse
+        # doesn't, so don't needlessly evict the LLM in that case.
+        will_bake = bool(os.getenv("ARS_FABULA_REGEN")) or \
+            not all(_generated_complete(k) for k, _ in specs)
+        if will_bake:
+            # Evict the LLM before ComfyUI loads its models — covers both the
+            # design LLM just used (custom mode) and one left resident from a
+            # prior scene (Reset → regenerate).
+            from model_client import release_vram
+            release_vram()
         print("[cast] ComfyUI reachable — generating cast...")
-        return _generate_via_comfy(char_keys)
+        return _generate_via_comfy(specs)
 
-    # Fall back to curated
-    print("[cast] ComfyUI not available — using curated cast.")
-    return load_curated_cast(char_keys)
+    # ComfyUI down — previously baked sprites beat placeholders
+    if all(_generated_complete(k) for k, _ in specs):
+        print("[cast] ComfyUI not available — using previously generated sprites.")
+        return [_load_generated_member(k, p) for k, p in specs]
+
+    # Fall back to curated (presets) / placeholders (custom)
+    print("[cast] ComfyUI not available — using curated/placeholder cast.")
+    out: list[CastMember] = []
+    for k, p in specs:
+        if k in PRESET_CHARACTERS:
+            out.extend(load_curated_cast([k]))
+        else:
+            out.append(_placeholder_member(k, p))
+    return out
 
 
 def load_curated_cast(char_keys: Optional[list[str]] = None) -> list[CastMember]:
@@ -514,7 +1034,7 @@ def load_curated_cast(char_keys: Optional[list[str]] = None) -> list[CastMember]
 
 def _build_member(key: str, preset: dict) -> CastMember:
     character = Character(
-        name=key.capitalize(),
+        name=preset.get("name", key.capitalize()),
         identity_prompt=preset["identity_prompt"],
         seed=preset["seed"],
         personality=preset["personality"],
@@ -524,58 +1044,116 @@ def _build_member(key: str, preset: dict) -> CastMember:
     return CastMember(character=character)
 
 
-def _generate_via_comfy(char_keys: list[str]) -> list[CastMember]:
-    """Generate a cast using ComfyUI. Full pipeline per character."""
+def _placeholder_member(key: str, preset: dict) -> CastMember:
+    """A custom character with placeholder sprites (no ComfyUI, no curated art)."""
+    member = _build_member(key, preset)
+    for expr in STANDARD_EXPRESSIONS:
+        placeholder = _make_placeholder_sprite(key, expr, member)
+        if placeholder:
+            member.expression_map[expr] = placeholder
+    return member
+
+
+def _generate_via_comfy(specs: list[tuple[str, dict]]) -> list[CastMember]:
+    """Generate a cast using ComfyUI. Full pipeline per character.
+
+    Any HTTP/ComfyUI failure for one character (broken pipe, rejected
+    workflow, timeout) falls back to curated sprites (presets) or
+    placeholders (custom characters) instead of crashing the batch.
+    """
     cast: list[CastMember] = []
 
-    for key in char_keys:
-        preset = PRESET_CHARACTERS.get(key)
-        if not preset:
-            continue
-
-        char_dir = os.path.join(GENERATED_DIR, key)
-        os.makedirs(char_dir, exist_ok=True)
-
-        # Step 1: Generate base (anime-face-gated)
-        print(f"  [cast] Generating {key} (seed={preset['seed']})...")
-        base_path = _generate_base_with_face_gate(key, preset, char_dir)
-        if not base_path:
-            print(f"  [cast] Base gen failed for {key}, falling back to curated")
-            cast.extend(load_curated_cast([key]))
-            continue
-
-        # Step 2: Warp expressions via ExpressionEditor
-        print(f"  [cast] Warping expressions for {key}...")
-        for expr_name in STANDARD_EXPRESSIONS:
-            expr_path = _generate_expression(base_path, key, expr_name)
-            status = "OK" if expr_path else "FAILED"
-            print(f"    {expr_name}: {status}")
-
-        # Step 3: Remove backgrounds (isnet-anime matte)
-        print(f"  [cast] Removing backgrounds for {key}...")
-        for expr_name in STANDARD_EXPRESSIONS:
-            src = os.path.join(char_dir, f"{key}_{expr_name}.png")
-            if os.path.exists(src):
-                _remove_bg(src)
-
-        # Step 4: Build CastMember
-        member = _build_member(key, preset)
-        for expr_name in STANDARD_EXPRESSIONS:
-            path = os.path.join(char_dir, f"{key}_{expr_name}.png")
-            if os.path.exists(path):
-                member.expression_map[expr_name] = path
-
-        # Any expression that failed gets a placeholder so the sprite-set
-        # integrity invariant (every emotion present) still holds.
-        for expr_name in STANDARD_EXPRESSIONS:
-            if expr_name not in member.expression_map:
-                placeholder = _make_placeholder_sprite(key, expr_name, member)
-                if placeholder:
-                    member.expression_map[expr_name] = placeholder
-
-        cast.append(member)
+    for key, preset in specs:
+        try:
+            cast.append(_generate_one_via_comfy(key, preset))
+        except Exception as e:
+            print(f"  [cast] ComfyUI pipeline failed for {key}: {e}")
+            if key in PRESET_CHARACTERS:
+                print(f"  [cast] Falling back to curated sprites for {key}")
+                cast.extend(load_curated_cast([key]))
+            else:
+                print(f"  [cast] Falling back to placeholder sprites for {key}")
+                cast.append(_placeholder_member(key, preset))
 
     return cast
+
+
+def _generated_complete(key: str) -> bool:
+    """True if a full generated sprite set already exists on disk."""
+    char_dir = os.path.join(GENERATED_DIR, key)
+    return all(os.path.exists(os.path.join(char_dir, f"{key}_{e}.png"))
+               for e in STANDARD_EXPRESSIONS)
+
+
+def _load_generated_member(key: str, preset: dict) -> CastMember:
+    """Build a CastMember from already-generated sprites on disk."""
+    char_dir = os.path.join(GENERATED_DIR, key)
+    member = _build_member(key, preset)
+    for expr in STANDARD_EXPRESSIONS:
+        member.expression_map[expr] = os.path.join(char_dir, f"{key}_{expr}.png")
+    return member
+
+
+def _generate_one_via_comfy(key: str, preset: dict) -> CastMember:
+    """Full ComfyUI pipeline for one character. Raises on hard failure.
+
+    Cached: if the character's full sprite set already exists under
+    static/sprites/generated/<key>/, it is reused — the bake happens once,
+    not on every casting beat. Force a re-bake by deleting that folder or
+    running with ARS_FABULA_REGEN=1.
+    """
+    if _generated_complete(key) and not os.getenv("ARS_FABULA_REGEN"):
+        print(f"  [cast] Reusing generated sprites for {key} "
+              f"(delete static/sprites/generated/{key}/ or set ARS_FABULA_REGEN=1 to re-bake)")
+        return _load_generated_member(key, preset)
+
+    char_dir = os.path.join(GENERATED_DIR, key)
+    os.makedirs(char_dir, exist_ok=True)
+
+    # Step 1: Generate base (face-gated)
+    print(f"  [cast] Generating {key} (seed={preset['seed']})...")
+    base_path = _generate_base_with_face_gate(key, preset, char_dir)
+    if not base_path:
+        raise RuntimeError("base generation produced no image")
+
+    # Step 2: Generate expressions via the FaceDetailer sheet.
+    # The eye/hair anchor keeps those traits from drifting across the set.
+    anchor = _face_anchor(preset.get("identity_prompt", ""))
+    print(f"  [cast] Generating expressions for {key} (anchor: {anchor or 'none'})...")
+    for expr_name in STANDARD_EXPRESSIONS:
+        tags = EXPRESSION_TAGS[expr_name]
+        expr_path = _generate_expression_retry(base_path, key, expr_name,
+                                               tags, preset["seed"], anchor=anchor)
+        status = "OK" if expr_path else "FAILED"
+        print(f"    {expr_name}: {status}")
+
+    # Step 3: Remove backgrounds (isnet-anime matte)
+    print(f"  [cast] Removing backgrounds for {key}...")
+    for expr_name in STANDARD_EXPRESSIONS:
+        src = os.path.join(char_dir, f"{key}_{expr_name}.png")
+        if os.path.exists(src):
+            _remove_bg(src)
+
+    # Step 3.5: Crop full-body renders to a consistent waist-up sprite,
+    # anchored on the head crown so the whole cast lines up.
+    _frame_upper_body(char_dir, key)
+
+    # Step 4: Build CastMember
+    member = _build_member(key, preset)
+    for expr_name in STANDARD_EXPRESSIONS:
+        path = os.path.join(char_dir, f"{key}_{expr_name}.png")
+        if os.path.exists(path):
+            member.expression_map[expr_name] = path
+
+    # Any expression that failed gets a placeholder so the sprite-set
+    # integrity invariant (every emotion present) still holds.
+    for expr_name in STANDARD_EXPRESSIONS:
+        if expr_name not in member.expression_map:
+            placeholder = _make_placeholder_sprite(key, expr_name, member)
+            if placeholder:
+                member.expression_map[expr_name] = placeholder
+
+    return member
 
 
 def _get_preset_chars(preset_name: str) -> list[str]:

@@ -225,34 +225,36 @@ class ComfyUIBackgroundProvider(PresetBackgroundProvider):
         """
         prompt_text = self.get_prompt_for_gen(key)
         try:
-            # Reuse the cast pipeline's ComfyUI helpers (submit + wait + output dir)
-            from cast_pipeline import _comfy_submit, _comfy_wait, COMFY_OUTPUT
-            import shutil
+            # Reuse the cast pipeline's ComfyUI helpers and model names
+            # (UNETLoader + Qwen CLIP/VAE — same trio as the validated
+            # expression sheet; anima is a UNET-only file, so
+            # CheckpointLoaderSimple would fail to load it).
+            from cast_pipeline import (_comfy_submit, _comfy_wait,
+                                       _comfy_fetch_image,
+                                       UNET_NAME, CLIP_NAME, VAE_NAME,
+                                       SAMPLER, SCHEDULER, STYLE_TAGS)
 
             workflow = {
-                "3": {"class_type": "KSampler", "inputs": {"seed": abs(hash(key)) % (2**31), "steps": 20, "cfg": 4.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
-                "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "anime-base-v1.0.safetensors"}},
+                "3": {"class_type": "KSampler", "inputs": {"seed": abs(hash(key)) % (2**31), "steps": 30, "cfg": 4.0, "sampler_name": SAMPLER, "scheduler": SCHEDULER, "denoise": 1.0, "model": ["44", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+                "44": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET_NAME, "weight_dtype": "default"}},
+                "45": {"class_type": "CLIPLoader", "inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}},
+                "15": {"class_type": "VAELoader", "inputs": {"vae_name": VAE_NAME}},
                 "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 1024, "height": 768, "batch_size": 1}},
-                "6": {"class_type": "CLIPTextEncode", "inputs": {"text": f"masterpiece, best quality, {prompt_text}", "clip": ["4", 1]}},
-                "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "worst quality, low quality, blurry", "clip": ["4", 1]}},
-                "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+                "6": {"class_type": "CLIPTextEncode", "inputs": {"text": f"absurdres, {STYLE_TAGS}, {prompt_text}", "clip": ["45", 0]}},
+                "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "worst quality, low quality, blurry", "clip": ["45", 0]}},
+                "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["15", 0]}},
                 "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": f"bg_{key}", "images": ["8", 0]}},
             }
 
             pid = _comfy_submit(workflow, f"bg_{key}")
             result = _comfy_wait(pid, timeout=120)
             if not result:
-                print(f"[bg] Generation timed out for '{key}'")
+                print(f"[bg] Generation failed/timed out for '{key}'")
                 return None
 
-            src = os.path.join(COMFY_OUTPUT, result)
-            if not os.path.exists(src):
-                print(f"[bg] ComfyUI output not found for '{key}': {src}")
-                return None
-
-            os.makedirs(BG_DIR, exist_ok=True)
             dst = os.path.join(BG_DIR, f"bg_{key}.png")
-            shutil.copy2(src, dst)
+            if not _comfy_fetch_image(result, dst):
+                return None
             print(f"[bg] Generated background '{key}' -> {dst}")
             return dst
         except Exception as e:

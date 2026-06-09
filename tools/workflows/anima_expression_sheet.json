@@ -1,0 +1,225 @@
+{
+  "id": "anima-face-detailer",
+  "revision": 0,
+  "last_node_id": 80,
+  "last_link_id": 50,
+  "nodes": [
+    {
+      "id": 10,
+      "type": "LoadImage",
+      "pos": [-1400, 0],
+      "size": [315, 340],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [10, 30], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": null, "slot_index": 1}
+      ],
+      "properties": {"NodeNameForTitle": "Load Base Character"},
+      "widgets_values": [""]
+    },
+    {
+      "id": 11,
+      "type": "CLIPTextEncode",
+      "pos": [-1400, -400],
+      "size": [315, 180],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 40}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [11], "slot_index": 0}
+      ],
+      "properties": {"NodeNameForTitle": "Expression Prompt"},
+      "widgets_values": ["masterpiece, best quality, score_7, safe. smile, open mouth, happy, looking at viewer, blush"]
+    },
+    {
+      "id": 12,
+      "type": "CLIPTextEncode",
+      "pos": [-1400, -180],
+      "size": [315, 180],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 41}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [12], "slot_index": 0}
+      ],
+      "properties": {"NodeNameForTitle": "Negative Prompt"},
+      "widgets_values": ["worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, bad anatomy, ugly, deformed"]
+    },
+    {
+      "id": 15,
+      "type": "VAELoader",
+      "pos": [-700, -200],
+      "size": [210, 58],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "VAE", "type": "VAE", "links": [15], "slot_index": 0}
+      ],
+      "properties": {"NodeNameForTitle": "Load Qwen VAE"},
+      "widgets_values": ["qwen_image_vae.safetensors"]
+    },
+    {
+      "id": 44,
+      "type": "UNETLoader",
+      "pos": [-700, -400],
+      "size": [280, 58],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "MODEL", "type": "MODEL", "links": [44], "slot_index": 0}
+      ],
+      "properties": {"NodeNameForTitle": "Load Anima UNET"},
+      "widgets_values": ["anima-base-v1.0.safetensors", "default"]
+    },
+    {
+      "id": 45,
+      "type": "CLIPLoader",
+      "pos": [-700, -80],
+      "size": [280, 58],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "CLIP", "type": "CLIP", "links": [40, 41], "slot_index": 0}
+      ],
+      "properties": {"NodeNameForTitle": "Load Qwen CLIP"},
+      "widgets_values": ["qwen_3_06b_base.safetensors", "stable_diffusion", "default"]
+    },
+    {
+      "id": 70,
+      "type": "UltralyticsDetectorProvider",
+      "pos": [-400, -400],
+      "size": [300, 58],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "BBOX_DETECTOR", "type": "BBOX_DETECTOR", "links": [70], "slot_index": 0},
+        {"name": "SEGM_DETECTOR", "type": "SEGM_DETECTOR", "links": null, "slot_index": 1}
+      ],
+      "properties": {"NodeNameForTitle": "Anime Face Detector"},
+      "widgets_values": ["bbox/face_yolov8n.pt"]
+    },
+    {
+      "id": 73,
+      "type": "SAMLoader",
+      "pos": [-400, -250],
+      "size": [300, 58],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "SAM_MODEL", "type": "SAM_MODEL", "links": [73], "slot_index": 0}
+      ],
+      "properties": {"NodeNameForTitle": "Load SAM"},
+      "widgets_values": ["sam_vit_b_01ec64.pth", "AUTO"]
+    },
+    {
+      "id": 80,
+      "type": "FaceDetailer",
+      "pos": [-100, -300],
+      "size": [420, 520],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {"name": "image", "type": "IMAGE", "link": 10},
+        {"name": "model", "type": "MODEL", "link": 44},
+        {"name": "clip", "type": "CLIP", "link": 42},
+        {"name": "vae", "type": "VAE", "link": 15},
+        {"name": "positive", "type": "CONDITIONING", "link": 11},
+        {"name": "negative", "type": "CONDITIONING", "link": 12},
+        {"name": "bbox_detector", "type": "BBOX_DETECTOR", "link": 70},
+        {"name": "sam_model_opt", "type": "SAM_MODEL", "link": 73},
+        {"name": "segm_detector_opt", "type": "SEGM_DETECTOR", "link": null}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [80], "slot_index": 0},
+        {"name": "IMAGE", "type": "IMAGE", "links": null, "slot_index": 1},
+        {"name": "IMAGE", "type": "IMAGE", "links": null, "slot_index": 2},
+        {"name": "MASK", "type": "MASK", "links": null, "slot_index": 3},
+        {"name": "DETAILER_PIPE", "type": "DETAILER_PIPE", "links": null, "slot_index": 4},
+        {"name": "IMAGE", "type": "IMAGE", "links": null, "slot_index": 5}
+      ],
+      "properties": {"NodeNameForTitle": "Face Detailer"}
+    },
+    {
+      "id": 1,
+      "type": "SaveImage",
+      "pos": [400, -200],
+      "size": [315, 106],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 80}
+      ],
+      "outputs": [],
+      "properties": {"NodeNameForTitle": "Save Expression"},
+      "widgets_values": ["anima_expression"]
+    },
+    {
+      "id": 48,
+      "type": "Note",
+      "pos": [-1400, 400],
+      "size": [1400, 300],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {"text": "## How to use\n\n1. Load your base character image in the Load Base Character node\n2. Type the expression you want in the Expression Prompt node\n3. Click Queue Prompt\n4. Only the face region gets re-generated — body, clothes, background stay identical\n\nChange the expression prompt to any of: smile, open mouth, happy, blush / angry, glare, gritting teeth / sad, tears, crying / surprised, wide eyes, shocked / embarrassed, ahegao, blush, drool etc.\n\nAdjust denoise (0.4-0.7) for stronger/weaker expression changes. Lower = subtler."}
+    },
+    {
+      "id": 49,
+      "type": "Note",
+      "pos": [-1400, 750],
+      "size": [700, 200],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {"text": "## Character expression prompts\n\n- neutral: neutral face, looking at viewer\n- smile: smile, open mouth, happy, blush\n- laugh: laughing, eyes closed, joyful\n- sad: sad, downturned eyebrows, tears\n- angry: angry, furrowed eyebrows, glare\n- surprised: surprised, wide eyes, shocked\n- embarrassed: embarrassed, heavy blush, (@_@), spiral eyes"}
+    }
+  ],
+  "links": [
+    [10, 10, 0, 80, 0, "IMAGE"],
+    [11, 11, 0, 80, 4, "CONDITIONING"],
+    [12, 12, 0, 80, 5, "CONDITIONING"],
+    [15, 15, 0, 80, 3, "VAE"],
+    [30, 10, 0, 1, 0, "IMAGE"],
+    [40, 45, 0, 11, 0, "CLIP"],
+    [41, 45, 0, 12, 0, "CLIP"],
+    [42, 45, 0, 80, 2, "CLIP"],
+    [44, 44, 0, 80, 1, "MODEL"],
+    [70, 70, 0, 80, 6, "BBOX_DETECTOR"],
+    [73, 73, 0, 80, 7, "SAM_MODEL"],
+    [80, 80, 0, 1, 0, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.85,
+      "offset": [150, 50]
+    }
+  },
+  "version": 0.4
+}
