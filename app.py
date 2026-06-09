@@ -997,8 +997,9 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 /* ── Free-text action bar — docked inside the canvas, in the same centered
    column as the choices (which sit just above it) and styled to match the
    choice buttons, so it reads as part of the interaction cluster rather than
-   a glued-on pill. Hidden until a scene is playing (JS sets body.vn-playing);
-   present whether or not choices are offered. ── */
+   a glued-on pill. Hidden until the END of a turn — revealed only on the last
+   beat once the text has finished revealing, or as soon as choices appear (JS
+   sets body.vn-playing; see syncStage). ── */
 /* The bar is styled to be visually identical to a .vn-choice-btn (see the
    "Choice restyle" block above): the same translucent void-scrim, blur(4px),
    borderless 2px accent left bar, sharp corners and italic dialogue voice —
@@ -1182,12 +1183,19 @@ const _typewriterObserver = new MutationObserver(function() {
     syncStage();
 });
 
-// Show the free-text bar only during a scene (canvas has .vn-dialogue),
-// not on the title or casting screens. Pure class toggle on <body>.
+// Reveal the free-text bar only at the END of a turn: when we're on the last
+// beat (data-more != "1") and the text has finished revealing (data-typing
+// "0") — or as soon as choices are offered. It stays hidden mid-turn, while
+// earlier beats are still being clicked through or typed out, and on the
+// title/casting screens. Pure class toggle on <body>.
 function syncStage() {
     const canvas = document.querySelector('.vn-screen');
-    const playing = !!(canvas && canvas.querySelector('.vn-dialogue'));
-    document.body.classList.toggle('vn-playing', playing);
+    const inScene = !!(canvas && canvas.querySelector('.vn-dialogue'));
+    const lastBeat = inScene && canvas.getAttribute('data-more') !== '1';
+    const typingDone = inScene && canvas.getAttribute('data-typing') === '0';
+    const hasChoices = inScene && !!canvas.querySelector('.vn-choices');
+    const showBar = lastBeat && (typingDone || hasChoices);
+    document.body.classList.toggle('vn-playing', showBar);
 }
 
 // Enter in the free-text box submits via the proven hidden-button bridge
@@ -2166,12 +2174,13 @@ def create_ui():
             # Free-text action bar — docked inside the canvas, in the same
             # centered column as the choices (which stack just above it) and
             # styled to match the choice buttons, so it feels like part of the
-            # interaction cluster. Shown only during a scene (JS toggles
-            # body.vn-playing); available with or without offered choices.
+            # interaction cluster. Revealed only at the END of a turn (JS
+            # toggles body.vn-playing once the last beat's text is shown or
+            # choices appear), not while earlier beats are still being read.
             with gr.Row(elem_id="free-input-row"):
                 free_input = gr.Textbox(
                     scale=8, lines=1, max_lines=1,
-                    placeholder="Or say or do something in your own words…",
+                    placeholder="Your choice…",
                     label=None, show_label=False, container=False,
                     elem_id="free-input",
                 )
