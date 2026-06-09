@@ -24,6 +24,7 @@ Thumbs.db
 
 # Runtime
 *.log
+logs/
 
 # Generated assets & runtime data (regenerable sprites/backgrounds,
 # save slots, contact-sheet report) — kept out of version control.

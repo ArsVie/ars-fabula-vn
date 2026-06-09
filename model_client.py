@@ -106,6 +106,10 @@ class MockModel(ModelClient):
       MockModel(responses=["text 1", {"role":"assistant","tool_calls":[...]}, ...])
       MockModel(handler=lambda messages, tools: "...")  # dynamic
     """
+    # Scripted output is not real model data — the engine skips trace logging
+    # for mock models so tests and mock fallbacks don't pollute the dataset.
+    is_mock = True
+
     def __init__(self, responses: Optional[list] = None,
                  handler: Optional[Callable[[list, Optional[list]], object]] = None):
         self._queue = list(responses or [])

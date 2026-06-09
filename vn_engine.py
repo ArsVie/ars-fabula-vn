@@ -22,6 +22,7 @@ import os
 from vn_contracts import SceneState, CastMember, Choice, ActionResult, AffectionFlag, SaveData
 from vn_prompt import build_full_prompt, build_state_banner
 from model_client import ModelClient
+from trace_log import log_turn
 
 SAVE_DIR = os.path.join(os.path.dirname(__file__), "saves")
 
@@ -597,6 +598,22 @@ class VNEngine:
 
         # 3. Cast-lock check — detect violations BEFORE cleaning removes them
         violations = _find_cast_violations(response, self.cast)
+
+        # Trace the raw prompt→response for fine-tuning (real models only;
+        # mock/scripted output is skipped). Best-effort, never raises.
+        if not getattr(self.model, "is_mock", False):
+            log_turn(
+                messages, response,
+                model=getattr(getattr(self.model, "cfg", None), "model", ""),
+                context={
+                    "turn": self.scene.turn,
+                    "scene": self.scene.description,
+                    "mood": self.scene.mood,
+                    "present": list(self.scene.present),
+                    "player_input": player_choice_text,
+                    "cast_violations": violations,
+                },
+            )
 
         # 4. Parse tool calls
         tool_calls = parse_tool_calls(response)

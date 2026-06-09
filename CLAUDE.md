@@ -26,6 +26,7 @@ Model: `ARS_FABULA_BACKEND` (`server`|`mock`), `ARS_FABULA_BASE_URL` (default `h
 Generation: `ARS_FABULA_COMFY` (ComfyUI URL), `ARS_FABULA_SAMPLER` (default `dpm_2_ancestral`), `ARS_FABULA_SCHEDULER` (`simple`), `ARS_FABULA_STYLE` (shared style tags), `ARS_FABULA_SPRITE_FRAC` (upper-body crop fraction, 0.62), `ARS_FABULA_REGEN` (force re-bake), `ARS_FABULA_QUALITY`, `ARS_FABULA_NEGATIVE`.
 VRAM/LLM lifecycle: `ARS_FABULA_LLM_MANAGE` (`auto`|`win`|`ollama`|`none`), `ARS_FABULA_LLAMA_EXE_WIN`, `ARS_FABULA_LLAMA_MODEL_WIN`, `ARS_FABULA_LLAMA_ARGS`, `ARS_FABULA_LLM_STOP_CMD`, `ARS_FABULA_LLM_START_CMD`, `ARS_FABULA_LLM_UNLOAD_URL`.
 Media: `ARS_FABULA_VOICE` (`mock`|`kokoro`|`chatterbox`), `ARS_FABULA_BG` (`preset`|`comfyui`).
+Traces: `ARS_FABULA_TRACE` (`1`/on default, `0` disables), `ARS_FABULA_TRACE_DIR` (default `logs/traces`) — per-turn prompt→response JSONL for fine-tuning (real models only; mock skipped). See `trace_log.py`.
 
 ### External services
 - LLM: any OpenAI-compatible server at `ARS_FABULA_BASE_URL` (here: llama-server on Windows `:8111`).
