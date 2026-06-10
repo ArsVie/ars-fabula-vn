@@ -36,6 +36,7 @@ import time
 import urllib.request
 import urllib.error
 import shutil
+import re
 from typing import Optional
 
 from vn_contracts import Character, CastMember, STANDARD_EXPRESSIONS
@@ -70,7 +71,7 @@ SCHEDULER = os.getenv("ARS_FABULA_SCHEDULER", "simple")
 # `@artistname` danbooru artist tags here (or via env) to narrow further.
 STYLE_TAGS = os.getenv(
     "ARS_FABULA_STYLE",
-    "official art, anime screenshot, soft cel shading, detailed eyes, clean lineart",
+    "anime style, cel shading, detailed",
 )
 
 # Full-body base canvas (taller than the old 512x768). We generate the whole
@@ -78,6 +79,52 @@ STYLE_TAGS = os.getenv(
 # composition lands the head at a consistent place/scale across characters,
 # which upper-body framing did not.
 BASE_WIDTH, BASE_HEIGHT = 512, 896
+
+# Fast generation: bake the base at a LOWER RESOLUTION (same 4:7 aspect) for a
+# much quicker cast. Also uses lighter FaceDetailer parameters (fewer steps,
+# smaller guide/max size, euler sampler) so both the base gen and expression
+# pass are faster. Toggled per run from the UI via set_fast_generation(); fast
+# dims are env-overridable.
+FAST_GENERATION = False
+FAST_BASE_WIDTH = int(os.getenv("ARS_FABULA_FAST_WIDTH", "384"))
+FAST_BASE_HEIGHT = int(os.getenv("ARS_FABULA_FAST_HEIGHT", "672"))
+
+# Fast-mode FaceDetailer params — lower steps/res for quicker expression gen
+# while preserving identity (from the user's validated expression sheet).
+_FAST_EXPRESSION_PARAMS = {
+    "guide_size": 256,
+    "max_size": 384,
+    "steps": 15,
+    "sampler_name": "euler",
+    "denoise": 0.5,
+    "feather": 15,
+    "bbox_threshold": 0.5,
+    "bbox_dilation": 25,
+    "bbox_crop_factor": 2.0,
+    "sam_bbox_expansion": 0,
+}
+
+
+def set_fast_generation(enabled: bool) -> None:
+    """Enable/disable the lower-resolution fast bake for subsequent runs."""
+    global FAST_GENERATION
+    FAST_GENERATION = bool(enabled)
+
+
+def _base_dims() -> tuple[int, int]:
+    """Base canvas size for the current mode (fast = lower resolution)."""
+    if FAST_GENERATION:
+        return FAST_BASE_WIDTH, FAST_BASE_HEIGHT
+    return BASE_WIDTH, BASE_HEIGHT
+
+
+def _char_dir(key: str) -> str:
+    """Per-character generated-sprite folder for the current mode. Fast (low-
+    res) bakes use a separate '<key>_fast' folder so they never collide with —
+    or get silently reused as — the full-resolution set, and vice versa."""
+    return os.path.join(GENERATED_DIR, f"{key}_fast" if FAST_GENERATION else key)
+
+
 # Fraction of the (matted) image height kept for the on-screen sprite,
 # measured DOWN from the head crown. ~0.62 = head + torso (waist-up).
 UPPER_BODY_FRAC = float(os.getenv("ARS_FABULA_SPRITE_FRAC", "0.62"))
@@ -164,7 +211,7 @@ PRESET_CHARACTERS: dict[str, dict] = {
             "blue skirt, red ribbon, gentle expression, quiet reserved aura, "
             "soft lighting"
         ),
-        "personality": "Quiet and reserved but deeply caring. Speaks in short sentences. "
+        "personality": "Quiet and reserved but a deeply caring girl. Speaks in short sentences. "
                        "Notices small details about others. Opens up slowly. "
                        "Has a dry sense of humor that surprises people.",
         "voice_id": "af_bella",
@@ -180,7 +227,7 @@ PRESET_CHARACTERS: dict[str, dict] = {
         ),
         "personality": "Outgoing and energetic with a mischievous streak. "
                        "Teases people he likes. Loyal to friends. "
-                       "Acts confident but gets flustered easily.",
+                       "Acts confident but gets flustered easily, boy.",
         "voice_id": "am_michael",   # Kokoro male voice (am_*; af_* are female)
         "role": "classmate",
         "seed": 43,
@@ -234,7 +281,7 @@ EXPRESSION_DENOISE = 0.55
 
 # Model files (must match the names installed in ComfyUI — taken verbatim
 # from the validated workflow).
-UNET_NAME = "anima-base-v1.0.safetensors"
+UNET_NAME = "anima-base-v1.0-Q5_K_M.gguf"
 CLIP_NAME = "qwen_3_06b_base.safetensors"
 VAE_NAME = "qwen_image_vae.safetensors"
 SAM_NAME = "sam_vit_b_01ec64.pth"
@@ -578,6 +625,7 @@ def _generate_base(character_key: str, preset: dict, out_dir: str,
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"{character_key}_base.png")
     seed = preset["seed"] if seed is None else seed
+    base_w, base_h = _base_dims()
 
     workflow = {
         "1": {"inputs": {"filename_prefix": f"base_{character_key}", "images": ["8", 0]}, "class_type": "SaveImage"},
@@ -591,8 +639,8 @@ def _generate_base(character_key: str, preset: dict, out_dir: str,
             "model": ["44", 0], "positive": ["11", 0], "negative": ["12", 0],
             "latent_image": ["28", 0],
         }, "class_type": "KSampler"},
-        "28": {"inputs": {"width": BASE_WIDTH, "height": BASE_HEIGHT, "batch_size": 1}, "class_type": "EmptyLatentImage"},
-        "44": {"inputs": {"unet_name": UNET_NAME, "weight_dtype": "default"}, "class_type": "UNETLoader"},
+        "28": {"inputs": {"width": base_w, "height": base_h, "batch_size": 1}, "class_type": "EmptyLatentImage"},
+        "44": {"inputs": {"unet_name": UNET_NAME}, "class_type": "UnetLoaderGGUF"},
         "45": {"inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}, "class_type": "CLIPLoader"},
     }
 
@@ -649,7 +697,7 @@ def _detect_anime_face(base_path: str, character_key: str) -> Optional[bool]:
         print(f"  [cast] Face gate produced no output; proceeding without gate")
         return None
 
-    mask_path = os.path.join(GENERATED_DIR, character_key, "_facegate_mask.png")
+    mask_path = os.path.join(_char_dir(character_key), "_facegate_mask.png")
     if not _comfy_fetch_image(result, mask_path):
         print(f"  [cast] Face gate mask fetch failed; proceeding without gate")
         return None
@@ -697,7 +745,7 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
 
     Returns path to the expression PNG, or None on failure.
     """
-    out_dir = os.path.join(GENERATED_DIR, character_key)
+    out_dir = _char_dir(character_key)
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"{character_key}_{expr_name}.png")
 
@@ -711,31 +759,37 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
 
     anchor_part = f"{anchor}, " if anchor else ""
     expr_prompt = f"{QUALITY}, {STYLE_TAGS}. {anchor_part}{expr_tags}"
+
+    # FaceDetailer inputs — standard params, overridden per-key in fast mode
+    _fd_inputs = {
+        "image": ["10", 0], "model": ["44", 0], "clip": ["45", 0], "vae": ["15", 0],
+        "guide_size": 384, "guide_size_for": True, "max_size": 768,
+        "seed": seed, "steps": 20, "cfg": 4.0,
+        "sampler_name": SAMPLER, "scheduler": SCHEDULER,
+        "positive": ["11", 0], "negative": ["12", 0],
+        "denoise": EXPRESSION_DENOISE, "feather": 8,
+        "noise_mask": True, "force_inpaint": True,
+        # 0.3 (was 0.4): catch harder-to-detect faces (laugh/squint)
+        "bbox_threshold": 0.3, "bbox_dilation": 15, "bbox_crop_factor": 3.0,
+        "sam_detection_hint": "center-1", "sam_dilation": 0,
+        "sam_threshold": 0.93, "sam_bbox_expansion": 10,
+        "sam_mask_hint_threshold": 0.7, "sam_mask_hint_use_negative": "False",
+        "drop_size": 10, "wildcard": "", "cycle": 1,
+        "bbox_detector": ["70", 0], "sam_model_opt": ["73", 0],
+    }
+    if FAST_GENERATION:
+        _fd_inputs.update(_FAST_EXPRESSION_PARAMS)
+
     workflow = {
         "10": {"inputs": {"image": f"{character_key}_base.png"}, "class_type": "LoadImage"},
         "11": {"inputs": {"text": expr_prompt, "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
         "12": {"inputs": {"text": NEGATIVE, "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
         "15": {"inputs": {"vae_name": VAE_NAME}, "class_type": "VAELoader"},
-        "44": {"inputs": {"unet_name": UNET_NAME, "weight_dtype": "default"}, "class_type": "UNETLoader"},
+        "44": {"inputs": {"unet_name": UNET_NAME}, "class_type": "UnetLoaderGGUF"},
         "45": {"inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}, "class_type": "CLIPLoader"},
         "70": {"inputs": {"model_name": ANIME_FACE_MODEL}, "class_type": "UltralyticsDetectorProvider"},
         "73": {"inputs": {"model_name": SAM_NAME, "device_mode": "AUTO"}, "class_type": "SAMLoader"},
-        "80": {"inputs": {
-            "image": ["10", 0], "model": ["44", 0], "clip": ["45", 0], "vae": ["15", 0],
-            "guide_size": 384, "guide_size_for": True, "max_size": 768,
-            "seed": seed, "steps": 20, "cfg": 4.0,
-            "sampler_name": SAMPLER, "scheduler": SCHEDULER,
-            "positive": ["11", 0], "negative": ["12", 0],
-            "denoise": EXPRESSION_DENOISE, "feather": 8,
-            "noise_mask": True, "force_inpaint": True,
-            # 0.3 (was 0.4): catch harder-to-detect faces (laugh/squint)
-            "bbox_threshold": 0.3, "bbox_dilation": 15, "bbox_crop_factor": 3.0,
-            "sam_detection_hint": "center-1", "sam_dilation": 0,
-            "sam_threshold": 0.93, "sam_bbox_expansion": 10,
-            "sam_mask_hint_threshold": 0.7, "sam_mask_hint_use_negative": "False",
-            "drop_size": 10, "wildcard": "", "cycle": 1,
-            "bbox_detector": ["70", 0], "sam_model_opt": ["73", 0],
-        }, "class_type": "FaceDetailer"},
+        "80": {"inputs": _fd_inputs, "class_type": "FaceDetailer"},
         "1": {"inputs": {"filename_prefix": f"{character_key}_{expr_name}", "images": ["80", 0]}, "class_type": "SaveImage"},
     }
 
@@ -1079,15 +1133,16 @@ def _generate_via_comfy(specs: list[tuple[str, dict]]) -> list[CastMember]:
 
 
 def _generated_complete(key: str) -> bool:
-    """True if a full generated sprite set already exists on disk."""
-    char_dir = os.path.join(GENERATED_DIR, key)
+    """True if a full generated sprite set already exists on disk
+    (for the current mode — fast and full are cached separately)."""
+    char_dir = _char_dir(key)
     return all(os.path.exists(os.path.join(char_dir, f"{key}_{e}.png"))
                for e in STANDARD_EXPRESSIONS)
 
 
 def _load_generated_member(key: str, preset: dict) -> CastMember:
     """Build a CastMember from already-generated sprites on disk."""
-    char_dir = os.path.join(GENERATED_DIR, key)
+    char_dir = _char_dir(key)
     member = _build_member(key, preset)
     for expr in STANDARD_EXPRESSIONS:
         member.expression_map[expr] = os.path.join(char_dir, f"{key}_{expr}.png")
@@ -1104,10 +1159,10 @@ def _generate_one_via_comfy(key: str, preset: dict) -> CastMember:
     """
     if _generated_complete(key) and not os.getenv("ARS_FABULA_REGEN"):
         print(f"  [cast] Reusing generated sprites for {key} "
-              f"(delete static/sprites/generated/{key}/ or set ARS_FABULA_REGEN=1 to re-bake)")
+              f"(delete {_char_dir(key)}/ or set ARS_FABULA_REGEN=1 to re-bake)")
         return _load_generated_member(key, preset)
 
-    char_dir = os.path.join(GENERATED_DIR, key)
+    char_dir = _char_dir(key)
     os.makedirs(char_dir, exist_ok=True)
 
     # Step 1: Generate base (face-gated)
@@ -1170,7 +1225,7 @@ def _get_preset_chars(preset_name: str) -> list[str]:
 
 def _make_placeholder_sprite(char_key: str, expr: str, member: CastMember) -> Optional[str]:
     """Create a colored placeholder sprite for missing expressions."""
-    char_dir = os.path.join(GENERATED_DIR, char_key)
+    char_dir = _char_dir(char_key)
     os.makedirs(char_dir, exist_ok=True)
     path = os.path.join(char_dir, f"{char_key}_{expr}.png")
 

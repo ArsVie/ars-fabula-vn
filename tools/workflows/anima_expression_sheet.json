@@ -71,7 +71,7 @@
     },
     {
       "id": 44,
-      "type": "UNETLoader",
+      "type": "UnetLoaderGGUF",
       "pos": [-700, -400],
       "size": [280, 58],
       "flags": {},
@@ -81,8 +81,8 @@
       "outputs": [
         {"name": "MODEL", "type": "MODEL", "links": [44], "slot_index": 0}
       ],
-      "properties": {"NodeNameForTitle": "Load Anima UNET"},
-      "widgets_values": ["anima-base-v1.0.safetensors", "default"]
+      "properties": {"NodeNameForTitle": "Load Anima UNET (GGUF)"},
+      "widgets_values": ["anima-base-v1.0-Q5_K_M.gguf"]
     },
     {
       "id": 45,

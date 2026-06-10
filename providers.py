@@ -236,7 +236,7 @@ class ComfyUIBackgroundProvider(PresetBackgroundProvider):
 
             workflow = {
                 "3": {"class_type": "KSampler", "inputs": {"seed": abs(hash(key)) % (2**31), "steps": 30, "cfg": 4.0, "sampler_name": SAMPLER, "scheduler": SCHEDULER, "denoise": 1.0, "model": ["44", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
-                "44": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET_NAME, "weight_dtype": "default"}},
+                "44": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": UNET_NAME}},
                 "45": {"class_type": "CLIPLoader", "inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}},
                 "15": {"class_type": "VAELoader", "inputs": {"vae_name": VAE_NAME}},
                 "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 1024, "height": 768, "batch_size": 1}},

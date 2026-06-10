@@ -83,7 +83,7 @@ def _base_workflow(prompt, negative, seed, sampler):
             "latent_image": ["28", 0],
         }, "class_type": "KSampler"},
         "28": {"inputs": {"width": WIDTH, "height": HEIGHT, "batch_size": 1}, "class_type": "EmptyLatentImage"},
-        "44": {"inputs": {"unet_name": UNET_NAME, "weight_dtype": "default"}, "class_type": "UNETLoader"},
+        "44": {"inputs": {"unet_name": UNET_NAME}, "class_type": "UnetLoaderGGUF"},
         "45": {"inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}, "class_type": "CLIPLoader"},
     }
 

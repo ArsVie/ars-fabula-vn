@@ -1770,7 +1770,22 @@ def _split_markers(text: str) -> list[tuple[str, str]]:
     return segs
 
 
-_DIALOGUE_RE = re.compile(r'^\[(\w+)\]:\s*"(.*)"\s*$')
+# Speaker line: an optionally-bracketed name prefix ("Yuki:", "[Yuki]:") then
+# the line. We do NOT trust the bracket/quote shape — the captured name is
+# validated against the locked cast in _segment_beats, and only a real cast
+# member makes it a speaker (and gets highlighted). This keeps the highlight
+# consistent no matter how the model punctuated the line. Group 2 is the rest
+# of the line (wrapping quotes stripped separately).
+_SPEAKER_RE = re.compile(r'^\s*\[?\s*([^\[\]:]{1,40}?)\s*\]?\s*:\s*(.+)$')
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    """Drop one layer of matching wrapping quotes (straight or smart)."""
+    t = text.strip()
+    for a, b in (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")):
+        if len(t) >= 2 and t[0] == a and t[-1] == b:
+            return t[1:-1].strip()
+    return t
 
 # Narration pacing: cap each narration beat so the dialogue box never holds a
 # wall of text. Whichever limit hits first ends the chunk; the rest becomes
@@ -1867,11 +1882,12 @@ def _segment_beats(response: str, cast: dict[str, CastMember],
             if not s:
                 flush_narr()
                 continue
-            m = _DIALOGUE_RE.match(s)
-            if m:
+            m = _SPEAKER_RE.match(s)
+            canon = _check_cast_lock(m.group(1).strip(), cast) if m else None
+            if canon:
                 flush_narr()
-                speaker = _check_cast_lock(m.group(1), cast) or m.group(1)
-                beats.append({"speaker": speaker, "text": m.group(2),
+                beats.append({"speaker": canon,
+                              "text": _strip_wrapping_quotes(m.group(2)),
                               "expressions": dict(expr), "background": bg,
                               "present": list(present), "voice": None})
             else:
@@ -1952,7 +1968,8 @@ def _make_callbacks(bg_provider: BackgroundProvider):
     def on_start(cast_preset: str,
                  n1: str = "", c1: str = "", t1: str = "",
                  n2: str = "", c2: str = "", t2: str = "",
-                 n3: str = "", c3: str = "", t3: str = ""):
+                 n3: str = "", c3: str = "", t3: str = "",
+                 fast: bool = False):
         """The CASTING BEAT — a generator so portraits resolve one by one.
 
         Loading is the feature: yield the casting screen immediately,
@@ -1967,6 +1984,8 @@ def _make_callbacks(bg_provider: BackgroundProvider):
                  if (n or "").strip()]
 
         if cast_preset == "generated":
+            from cast_pipeline import set_fast_generation
+            set_fast_generation(fast)   # lower-res bake if the box is checked
             char_keys = ([card["name"].strip() for card in cards]
                          if cards else ["yuki", "haruki", "sakura"])
             loader = lambda k: None   # generated mode batches below
@@ -2212,6 +2231,9 @@ def create_ui():
                     ct = gr.Textbox(label="Advanced: appearance tags (override)", scale=4,
                                     placeholder="1girl, silver hair, long hair, blue eyes, …")
                     card_fields.extend([cn, cc, ct])
+            fast_gen = gr.Checkbox(
+                value=False, label="⚡ Fast generation (lower resolution — quicker bake, softer detail)",
+            )
 
         # ── Hidden sinks (callback outputs the JS never reads) ───
         cast_panel = gr.HTML(visible=False)
@@ -2263,7 +2285,7 @@ def create_ui():
         turn_outputs = main_outputs + [beats_state, beat_idx_state]
 
         # ── Event wiring ───────────────────────────────────────
-        start_btn.click(fn=on_start, inputs=[preset_box] + card_fields,
+        start_btn.click(fn=on_start, inputs=[preset_box] + card_fields + [fast_gen],
                         outputs=turn_outputs)
         # Cast Setup is a main-menu tool: hide it once a game begins,
         # bring it back on Reset (which returns to the title).

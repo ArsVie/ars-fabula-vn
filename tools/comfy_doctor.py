@@ -31,7 +31,7 @@ OK, FAIL, WARN = "  [ok]  ", "  [FAIL]", "  [warn]"
 
 REQUIRED_NODES = [
     "LoadImage", "SaveImage", "KSampler", "EmptyLatentImage",
-    "CLIPTextEncode", "VAEDecode", "VAELoader", "UNETLoader", "CLIPLoader",
+    "CLIPTextEncode", "VAEDecode", "VAELoader", "UnetLoaderGGUF", "CLIPLoader",
     "UltralyticsDetectorProvider", "SAMLoader", "FaceDetailer",
     "BboxDetectorSEGS", "SegsToCombinedMask", "MaskToImage",
 ]
@@ -106,7 +106,7 @@ def main() -> int:
             print(f"{OK} all {len(REQUIRED_NODES)} required node classes present")
 
         for node, field, wanted in [
-            ("UNETLoader", "unet_name", UNET_NAME),
+            ("UnetLoaderGGUF", "unet_name", UNET_NAME),
             ("CLIPLoader", "clip_name", CLIP_NAME),
             ("VAELoader", "vae_name", VAE_NAME),
             ("SAMLoader", "model_name", SAM_NAME),
