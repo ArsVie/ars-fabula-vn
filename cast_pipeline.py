@@ -89,20 +89,11 @@ FAST_GENERATION = False
 FAST_BASE_WIDTH = int(os.getenv("ARS_FABULA_FAST_WIDTH", "384"))
 FAST_BASE_HEIGHT = int(os.getenv("ARS_FABULA_FAST_HEIGHT", "672"))
 
-# Fast-mode FaceDetailer params — lower steps/res for quicker expression gen
-# while preserving identity (from the user's validated expression sheet).
-_FAST_EXPRESSION_PARAMS = {
-    "guide_size": 256,
-    "max_size": 384,
-    "steps": 15,
-    "sampler_name": "euler",
-    "denoise": 0.5,
-    "feather": 15,
-    "bbox_threshold": 0.5,
-    "bbox_dilation": 25,
-    "bbox_crop_factor": 2.0,
-    "sam_bbox_expansion": 0,
-}
+# Expression FaceDetailer params are now UNIFIED across all modes (fast and
+# standard). The only mode difference is base canvas resolution — see
+# _base_dims(). These lighter params (euler, 15 steps, guide_size=256) come
+# from the user's validated expression sheet; the old heavier config
+# (dpm_2_ancestral, 20 steps, guide_size=384) added cost with no quality gain.
 
 
 def set_fast_generation(enabled: bool) -> None:
@@ -277,7 +268,7 @@ EXPRESSION_TAGS = {
 }
 
 # FaceDetailer strength — the sheet's note: 0.4–0.7, lower = subtler.
-EXPRESSION_DENOISE = 0.55
+EXPRESSION_DENOISE = 0.5
 
 # Model files (must match the names installed in ComfyUI — taken verbatim
 # from the validated workflow).
@@ -760,25 +751,27 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
     anchor_part = f"{anchor}, " if anchor else ""
     expr_prompt = f"{QUALITY}, {STYLE_TAGS}. {anchor_part}{expr_tags}"
 
-    # FaceDetailer inputs — standard params, overridden per-key in fast mode
+    # FaceDetailer inputs — unified across all modes (see the module-level
+    # comment above; only base resolution differs per mode).
+    # Unified FaceDetailer params from the validated expression sheet.
+    # Lighter than the old heavier config (guide_size 384→256, steps 20→15,
+    # dpm_2_ancestral→euler) with no quality loss. bbox_threshold 0.5 catches
+    # expressions reliably (was 0.3 with more dilation/crop to compensate).
     _fd_inputs = {
         "image": ["10", 0], "model": ["44", 0], "clip": ["45", 0], "vae": ["15", 0],
-        "guide_size": 384, "guide_size_for": True, "max_size": 768,
-        "seed": seed, "steps": 20, "cfg": 4.0,
-        "sampler_name": SAMPLER, "scheduler": SCHEDULER,
+        "guide_size": 256, "guide_size_for": True, "max_size": 384,
+        "seed": seed, "steps": 15, "cfg": 4.0,
+        "sampler_name": "euler", "scheduler": SCHEDULER,
         "positive": ["11", 0], "negative": ["12", 0],
-        "denoise": EXPRESSION_DENOISE, "feather": 8,
+        "denoise": EXPRESSION_DENOISE, "feather": 15,
         "noise_mask": True, "force_inpaint": True,
-        # 0.3 (was 0.4): catch harder-to-detect faces (laugh/squint)
-        "bbox_threshold": 0.3, "bbox_dilation": 15, "bbox_crop_factor": 3.0,
+        "bbox_threshold": 0.5, "bbox_dilation": 25, "bbox_crop_factor": 2.0,
         "sam_detection_hint": "center-1", "sam_dilation": 0,
-        "sam_threshold": 0.93, "sam_bbox_expansion": 10,
+        "sam_threshold": 0.93, "sam_bbox_expansion": 0,
         "sam_mask_hint_threshold": 0.7, "sam_mask_hint_use_negative": "False",
         "drop_size": 10, "wildcard": "", "cycle": 1,
         "bbox_detector": ["70", 0], "sam_model_opt": ["73", 0],
     }
-    if FAST_GENERATION:
-        _fd_inputs.update(_FAST_EXPRESSION_PARAMS)
 
     workflow = {
         "10": {"inputs": {"image": f"{character_key}_base.png"}, "class_type": "LoadImage"},
@@ -1149,13 +1142,18 @@ def _load_generated_member(key: str, preset: dict) -> CastMember:
     return member
 
 
-def _generate_one_via_comfy(key: str, preset: dict) -> CastMember:
+def _generate_one_via_comfy(key: str, preset: dict, base_path: str = None) -> CastMember:
     """Full ComfyUI pipeline for one character. Raises on hard failure.
 
     Cached: if the character's full sprite set already exists under
     static/sprites/generated/<key>/, it is reused — the bake happens once,
     not on every casting beat. Force a re-bake by deleting that folder or
     running with ARS_FABULA_REGEN=1.
+
+    When *base_path* is given, step 1 (base generation) is skipped — the
+    caller already ran the face-gated base gen and now only needs
+    expressions baked from it. The base is copied into the char dir if
+    it isn't already there.
     """
     if _generated_complete(key) and not os.getenv("ARS_FABULA_REGEN"):
         print(f"  [cast] Reusing generated sprites for {key} "
@@ -1165,11 +1163,17 @@ def _generate_one_via_comfy(key: str, preset: dict) -> CastMember:
     char_dir = _char_dir(key)
     os.makedirs(char_dir, exist_ok=True)
 
-    # Step 1: Generate base (face-gated)
-    print(f"  [cast] Generating {key} (seed={preset['seed']})...")
-    base_path = _generate_base_with_face_gate(key, preset, char_dir)
-    if not base_path:
-        raise RuntimeError("base generation produced no image")
+    # Step 1: Generate base (face-gated) — skipped if base_path provided and exists
+    if base_path and os.path.exists(base_path):
+        dest = os.path.join(char_dir, f"{key}_base.png")
+        if os.path.abspath(base_path) != os.path.abspath(dest):
+            shutil.copy2(base_path, dest)
+        print(f"  [cast] Using supplied base for {key}: {base_path}")
+    else:
+        print(f"  [cast] Generating {key} (seed={preset['seed']})...")
+        base_path = _generate_base_with_face_gate(key, preset, char_dir)
+        if not base_path:
+            raise RuntimeError("base generation produced no image")
 
     # Step 2: Generate expressions via the FaceDetailer sheet.
     # The eye/hair anchor keeps those traits from drifting across the set.

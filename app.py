@@ -510,6 +510,128 @@ body { background: var(--bg-void) !important; }
   text-align: center;
 }
 
+/* ── Interactive Casting Review ── */
+.vn-casting-review {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  background: radial-gradient(ellipse at center, #1c1c38 0%, var(--bg-screen) 70%);
+  padding: 20px;
+}
+.casting-review-title {
+  font-family: var(--font-display);
+  color: var(--text-accent);
+  font-size: 0.85rem;
+  letter-spacing: 0.15em;
+  margin-bottom: 18px;
+}
+.review-layout {
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
+  width: 100%;
+  max-width: 800px;
+  justify-content: center;
+}
+.review-image {
+  width: 220px;
+  height: 380px;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.review-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+}
+.review-no-image {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.82rem;
+  text-align: center;
+  padding: 16px;
+}
+.review-panel {
+  flex: 1;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.review-name {
+  font-family: var(--font-display);
+  color: var(--text-accent);
+  font-size: 1.15rem;
+  letter-spacing: 0.06em;
+}
+.review-prompt-label {
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.review-prompt {
+  width: 100%;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-mid) !important;
+  border-radius: 4px !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-dialogue) !important;
+  font-size: 0.9rem !important;
+  line-height: 1.5 !important;
+  padding: 10px 12px !important;
+  resize: vertical;
+  caret-color: var(--text-accent) !important;
+}
+.review-prompt:focus {
+  border-color: var(--border-accent) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 2px var(--border-glow) !important;
+}
+.review-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+.review-btn {
+  flex: 1;
+  padding: 10px 0 !important;
+  border-radius: 4px !important;
+  font-family: var(--font-display) !important;
+  font-size: 0.82rem !important;
+  letter-spacing: 0.1em !important;
+  cursor: pointer !important;
+  transition: all 0.18s ease !important;
+  border: 1px solid var(--border-mid) !important;
+}
+.review-btn.confirm {
+  background: linear-gradient(135deg, #c07840, #e8a87c) !important;
+  border-color: var(--border-accent) !important;
+  color: #0d0d1a !important;
+  font-weight: 600 !important;
+}
+.review-btn.confirm:hover {
+  box-shadow: 0 0 14px var(--border-glow) !important;
+}
+.review-btn.redo {
+  background: var(--bg-surface) !important;
+  color: var(--text-secondary) !important;
+}
+.review-btn.redo:hover {
+  border-color: var(--border-accent) !important;
+  color: var(--text-accent) !important;
+}
+
 /* ── Cast Panel extras ── */
 .cast-expressions {
   font-family: var(--font-ui);
@@ -1424,6 +1546,17 @@ document.addEventListener('click', function(e) {
         return;
     }
 
+    // ── Casting Review buttons ───────────────────────────────
+    const reviewConfirm = e.target.closest('.review-btn.confirm');
+    const reviewRedo    = e.target.closest('.review-btn.redo');
+    if (reviewConfirm || reviewRedo) {
+        e.preventDefault();
+        const promptEl = document.querySelector('#review-prompt-text');
+        if (promptEl) setHiddenVal('#casting-prompt-box', promptEl.value);
+        clickHidden(reviewConfirm ? '#casting-confirm-btn' : '#casting-redo-btn');
+        return;
+    }
+
     // ── Click anywhere outside an open panel closes it ────────
     const scr = e.target.closest('.vn-screen');
     if (scr && window._vnUi.panel
@@ -1503,6 +1636,45 @@ _ICON_TRAY_HTML = """
     class="vn-reset-cancel">Cancel</span></span></button>
 </div>
 """
+
+
+
+
+
+def _review_screen_html(key: str, preset: dict, base_path: str,
+                         char_num: int, total: int) -> str:
+    """Per-character review screen during interactive casting.
+
+    Shows the generated base image alongside the full prompt text
+    (editable) and Confirm/Redo buttons. The JS bridge writes the
+    textarea value to the hidden #casting-prompt-box before clicking
+    the hidden confirm/redo Gradio buttons.
+    """
+    name = preset.get("name", key.capitalize())
+    prompt = preset.get("identity_prompt", "")
+    img_uri = data_uri(base_path) if base_path else ""
+
+    img_html = (f'<img src="{img_uri}" alt="{name} base">'
+                if img_uri
+                else '<div class="review-no-image">Generation failed — try Redo</div>')
+
+    return f"""
+    <div class="vn-screen vn-casting-review">
+      <div class="casting-review-title">Cast Review · {char_num}/{total}</div>
+      <div class="review-layout">
+        <div class="review-image">{img_html}</div>
+        <div class="review-panel">
+          <div class="review-name">{name}</div>
+          <div class="review-prompt-label">Prompt — edit and Redo to regenerate</div>
+          <textarea class="review-prompt" id="review-prompt-text" rows="6">{_html.escape(prompt)}</textarea>
+          <div class="review-actions">
+            <button class="review-btn confirm" data-action="casting-confirm">&#10003; Confirm</button>
+            <button class="review-btn redo" data-action="casting-redo">&#8635; Redo</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
 
 
 def _panels_html(log_text: str, cast_html: str) -> str:
@@ -1966,32 +2138,68 @@ def _make_callbacks(bg_provider: BackgroundProvider):
                 "", "No active scene", None, "", [], 0)
 
     def on_start(cast_preset: str,
+                 casting_state,
                  n1: str = "", c1: str = "", t1: str = "",
                  n2: str = "", c2: str = "", t2: str = "",
                  n3: str = "", c3: str = "", t3: str = "",
                  fast: bool = False):
-        """The CASTING BEAT — a generator so portraits resolve one by one.
+        """The CASTING BEAT — generator for curated, state-machine init for generated.
 
-        Loading is the feature: yield the casting screen immediately,
-        reveal each cast member as they're ready, then open the scene.
-
-        Custom character cards (from Cast Setup) apply in generated mode:
-        name + concept → the LLM designs the appearance tags; advanced
-        tags override the designer. The sprite pose block is always locked.
+        Curated mode: yields progress screens as before (casting → portraits → scene).
+        Generated mode: designs characters, yields a loading screen, generates the
+        first base, yields the review screen, and ends — on_casting_confirm/redo
+        take over the interactive review loop from there.
         """
         cards = [{"name": n, "concept": c, "tags": t}
                  for n, c, t in ((n1, c1, t1), (n2, c2, t2), (n3, c3, t3))
                  if (n or "").strip()]
 
         if cast_preset == "generated":
-            from cast_pipeline import set_fast_generation
-            set_fast_generation(fast)   # lower-res bake if the box is checked
-            char_keys = ([card["name"].strip() for card in cards]
-                         if cards else ["yuki", "haruki", "sakura"])
-            loader = lambda k: None   # generated mode batches below
-        else:
-            char_keys = ["yuki", "haruki", "sakura"]
-            loader = lambda k: load_curated_cast([k])[0]
+            from cast_pipeline import (set_fast_generation, build_custom_specs,
+                                       _generate_base_with_face_gate, _char_dir,
+                                       PRESET_CHARACTERS)
+            from model_client import release_vram
+
+            set_fast_generation(fast)
+
+            # Build specs: custom cards override presets
+            if cards:
+                specs = build_custom_specs(cards)
+                if not specs:
+                    specs = [(k, PRESET_CHARACTERS[k]) for k in ["yuki", "haruki", "sakura"]]
+            else:
+                specs = [(k, PRESET_CHARACTERS[k]) for k in ["yuki", "haruki", "sakura"]]
+
+            if not specs:
+                yield (*_empty(), None)
+                return
+
+            # VRAM: evict LLM so ComfyUI can load its models
+            char_keys = [k for k, _ in specs]
+            yield (None, None,
+                   _casting_screen_html(char_keys, {},
+                                        "Waking the artists…"),
+                   {}, _cast_panel_html({}), "", "Preparing…", None, "", [], 0, None)
+
+            release_vram()
+
+            # Generate first base for review
+            key, preset = specs[0]
+            char_dir = _char_dir(key)
+            base_path = _generate_base_with_face_gate(key, preset, char_dir)
+
+            new_state = {"specs": specs, "idx": 0, "phase": "review", "fast": fast}
+
+            screen = _review_screen_html(key, preset, base_path or "", 1, len(specs))
+            info = f"Review: {preset.get('name', key)} · 1/{len(specs)}"
+
+            yield (None, None, screen, {}, _cast_panel_html({}), "", info, None, "",
+                   [], 0, new_state)
+            return  # generator ends; on_casting_confirm / on_casting_redo takes over
+
+        # ── Curated mode (unchanged behaviour) ──────────────────────
+        char_keys = ["yuki", "haruki", "sakura"]
+        loader = lambda k: load_curated_cast([k])[0]
 
         resolved: dict[str, CastMember] = {}
 
@@ -1999,55 +2207,25 @@ def _make_callbacks(bg_provider: BackgroundProvider):
         yield (None, None,
                _casting_screen_html(char_keys, resolved),
                {}, _cast_panel_html({}),
-               "", "Casting…", None, "", [], 0)
+               "", "Casting…", None, "", [], 0, None)
 
         # Beat 2 — portraits resolve
-        if cast_preset == "generated":
-            # One long bake; ComfyUI does the whole batch (falls back to
-            # curated internally if unreachable). Show the wait honestly.
+        for key in char_keys:
+            member = loader(key)
+            if member:
+                resolved[member.character.name] = member
+            time.sleep(0.45)
             yield (None, None,
-                   _casting_screen_html(char_keys, resolved,
-                                        "Generating your cast… (this is the bake — "
-                                        "everything after this is instant)"),
-                   {}, _cast_panel_html({}), "", "Casting…", None, "", [], 0)
-            members = generate_cast({"custom_cast": cards} if cards
-                                    else {"preset": "default"})
-            for m in members:
-                resolved[m.character.name] = m
-                yield (None, None,
-                       _casting_screen_html(char_keys, resolved),
-                       {}, _cast_panel_html(resolved),
-                       "", "Casting…", None, "", [], 0)
-        else:
-            for key in char_keys:
-                member = loader(key)
-                if member:
-                    resolved[member.character.name] = member
-                time.sleep(0.45)   # let the beat land — loading as a feature
-                yield (None, None,
-                       _casting_screen_html(char_keys, resolved),
-                       {}, _cast_panel_html(resolved),
-                       "", "Casting…", None, "", [], 0)
+                   _casting_screen_html(char_keys, resolved),
+                   {}, _cast_panel_html(resolved),
+                   "", "Casting…", None, "", [], 0, None)
 
         cast = resolved
         if not cast:
-            yield _empty()
+            yield (*_empty(), None)
             return
 
-        # VRAM swap-back: the bake is done, so unload ComfyUI's models and
-        # bring the LLM back up (relaunch + wait for /health) before the
-        # opening turn — llama-server doesn't reload lazily.
-        if cast_preset == "generated":
-            from cast_pipeline import comfy_free_vram
-            from model_client import ensure_llm, ModelConfig
-            yield (None, None,
-                   _casting_screen_html(char_keys, resolved,
-                                        "Cast ready — waking the storyteller…"),
-                   cast, _cast_panel_html(cast), "", "Casting…", None, "", [], 0)
-            comfy_free_vram()
-            ensure_llm(ModelConfig.from_env())
-
-        # Beat 3 — lock the cast, build the engine, open the scene
+        # Open the scene
         scene = SceneState(
             cast=cast, present=[],
             background="classroom", mood="peaceful",
@@ -2066,7 +2244,134 @@ def _make_callbacks(bg_provider: BackgroundProvider):
         yield (scene, engine, screen, cast, _cast_panel_html(cast),
                log,
                f"{scene.chapter} · {scene.background} ({scene.mood}) · {status}",
-               voice_path, prev_bg, beats, 0)
+               voice_path, prev_bg, beats, 0, None)
+
+    def on_casting_confirm(casting_state, casting_prompt: str,
+                           _scene: SceneState, _engine, _prev_bg: str):
+        """Confirm the current character's base and advance.
+
+        If more characters remain: generate the next base, return review screen.
+        If all confirmed: bake expressions, VRAM swap, start the VN scene.
+        """
+        if not casting_state or casting_state.get("phase") != "review":
+            return (*_empty(), None)
+
+        specs = casting_state["specs"]
+        idx = casting_state["idx"]
+        fast = casting_state.get("fast", False)
+
+        # Update current character's prompt from the (possibly edited) textbox
+        key, preset = specs[idx]
+        if casting_prompt and casting_prompt.strip():
+            preset["identity_prompt"] = casting_prompt.strip()
+            # Update the seed to reflect prompt changes (so redo gets fresh results)
+            from cast_pipeline import _stable_seed
+            preset["seed"] = _stable_seed(preset.get("name", key), preset["identity_prompt"])
+
+        # Advance to next character
+        next_idx = idx + 1
+        if next_idx < len(specs):
+            # More characters — generate next base
+            from cast_pipeline import (_generate_base_with_face_gate, _char_dir,
+                                       set_fast_generation)
+            set_fast_generation(fast)
+
+            next_key, next_preset = specs[next_idx]
+            char_dir = _char_dir(next_key)
+            base_path = _generate_base_with_face_gate(next_key, next_preset, char_dir)
+
+            new_state = {"specs": specs, "idx": next_idx, "phase": "review", "fast": fast}
+
+            screen = _review_screen_html(next_key, next_preset, base_path or "",
+                                         next_idx + 1, len(specs))
+            info = f"Review: {next_preset.get('name', next_key)} · {next_idx + 1}/{len(specs)}"
+
+            return (None, None, screen, {}, _cast_panel_html({}), "", info, None, "",
+                    [], 0, new_state)
+
+        # All confirmed — bake expressions, swap VRAM, start the VN
+        from cast_pipeline import (_generate_one_via_comfy, _char_dir,
+                                   comfy_free_vram, set_fast_generation)
+        from model_client import ensure_llm, ModelConfig
+
+        set_fast_generation(fast)
+
+        # Bake expressions for all characters (UNET still hot from base gen)
+        members = []
+        for skey, spreset in specs:
+            char_dir = _char_dir(skey)
+            base = os.path.join(char_dir, f"{skey}_base.png")
+            try:
+                member = _generate_one_via_comfy(skey, spreset,
+                                                 base_path=(base if os.path.exists(base) else ""))
+                members.append(member)
+            except Exception as e:
+                print(f"  [cast] Expression bake failed for {skey}: {e}")
+                # Fall back to placeholder
+                from cast_pipeline import _placeholder_member
+                members.append(_placeholder_member(skey, spreset))
+
+        cast = {m.character.name: m for m in members}
+        if not cast:
+            return (*_empty(), None)
+
+        # VRAM swap: unload ComfyUI, load LLM
+        comfy_free_vram()
+        ensure_llm(ModelConfig.from_env())
+
+        # Start the VN
+        scene = SceneState(
+            cast=cast, present=[],
+            background="classroom", mood="peaceful",
+            turn=0, chapter="Prologue",
+        )
+        engine, status = build_engine(cast, scene)
+        pre_expr, pre_bg = dict(scene.expressions), scene.background
+        pre_present = list(scene.present)
+        raw, scene = engine.run_turn("")
+        beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg,
+                               init_present=pre_present, voice_line=engine.last_voice)
+
+        log = clean_narration(raw)
+        screen, new_prev_bg, voice_path = _render_beats_screen(
+            beats, 0, scene, bg_provider, "", log_text=log)
+
+        return (scene, engine, screen, cast, _cast_panel_html(cast),
+                log,
+                f"{scene.chapter} · {scene.background} ({scene.mood}) · {status}",
+                voice_path, new_prev_bg, beats, 0, None)
+
+    def on_casting_redo(casting_state, casting_prompt: str):
+        """Regenerate the current character's base with the edited prompt."""
+        if not casting_state or casting_state.get("phase") != "review":
+            return (_title_screen_html(), "No active review", None, "")
+
+        from cast_pipeline import (set_fast_generation, _generate_base_with_face_gate,
+                                   _char_dir, build_identity_prompt)
+
+        specs = casting_state["specs"]
+        idx = casting_state["idx"]
+        fast = casting_state.get("fast", False)
+        key, preset = specs[idx]
+
+        set_fast_generation(fast)
+
+        # Update prompt from the textbox
+        if casting_prompt and casting_prompt.strip():
+            preset["identity_prompt"] = casting_prompt.strip()
+
+        # Bump seed for a genuinely different result
+        preset["seed"] = preset.get("seed", 42) + 1
+
+        char_dir = _char_dir(key)
+        base_path = _generate_base_with_face_gate(key, preset, char_dir)
+
+        screen = _review_screen_html(key, preset, base_path or "",
+                                     idx + 1, len(specs))
+        info = f"Review: {preset.get('name', key)} · {idx + 1}/{len(specs)}"
+
+        # Clear the prompt box so it shows the new prompt on next load
+        return (screen, info, casting_state, preset["identity_prompt"])
 
     def on_choice(choice_id: str, choice_text: str,
                   scene: SceneState, engine, prev_bg: str):
@@ -2156,7 +2461,8 @@ def _make_callbacks(bg_provider: BackgroundProvider):
     def on_reset():
         return _empty()
 
-    return on_start, on_choice, on_save, on_load, on_reset, on_advance, on_free_submit
+    return (on_start, on_choice, on_save, on_load, on_reset, on_advance, on_free_submit,
+            on_casting_confirm, on_casting_redo)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2168,7 +2474,7 @@ def create_ui():
     bg_backend = os.getenv("ARS_FABULA_BG", "preset")
     bg_provider = get_background_provider(bg_backend)
     (on_start, on_choice, on_save, on_load, on_reset, on_advance,
-     on_free_submit) = _make_callbacks(bg_provider)
+     on_free_submit, on_casting_confirm, on_casting_redo) = _make_callbacks(bg_provider)
 
     initial_scene = make_initial_scene()
 
@@ -2180,6 +2486,7 @@ def create_ui():
         prev_bg_state = gr.State("")
         beats_state = gr.State([])        # ordered display beats for this turn
         beat_idx_state = gr.State(0)      # which beat is currently shown
+        casting_state = gr.State(None)    # interactive casting review state
 
         # ── The stage: the canvas plus the free-text bar overlaid inside its
         #    frame. The wrapping Column is the positioned ancestor the bar
@@ -2278,15 +2585,26 @@ def create_ui():
         free_choice_id = gr.Textbox(value="__free__", visible="hidden",
                                     elem_id="free-choice-id")
 
+        # ── Casting review bridge widgets ──────────────────────
+        casting_prompt_box = gr.Textbox(visible="hidden", interactive=True,
+                                        elem_id="casting-prompt-box")
+        casting_confirm_btn = gr.Button("Confirm", visible="hidden",
+                                        elem_id="casting-confirm-btn")
+        casting_redo_btn = gr.Button("Redo", visible="hidden",
+                                      elem_id="casting-redo-btn")
+
         main_outputs = [scene_state, engine_ref, vn_screen, cast_data,
                         cast_panel, narration_log, scene_info,
                         voice_audio, prev_bg_state]
         # Turn callbacks also carry the beat list + index (read-at-your-own-pace).
         turn_outputs = main_outputs + [beats_state, beat_idx_state]
+        # Start + casting confirm carry the interactive review state as well.
+        start_outputs = turn_outputs + [casting_state]
 
         # ── Event wiring ───────────────────────────────────────
-        start_btn.click(fn=on_start, inputs=[preset_box] + card_fields + [fast_gen],
-                        outputs=turn_outputs)
+        start_btn.click(fn=on_start,
+                        inputs=[preset_box, casting_state] + card_fields + [fast_gen],
+                        outputs=start_outputs)
         # Cast Setup is a main-menu tool: hide it once a game begins,
         # bring it back on Reset (which returns to the title).
         start_btn.click(fn=lambda: gr.update(visible=False),
@@ -2316,6 +2634,20 @@ def create_ui():
         reset_btn.click(fn=on_reset, outputs=turn_outputs)
         reset_btn.click(fn=lambda: gr.update(visible=True),
                         outputs=[cast_setup_group])
+
+        # ── Casting review — confirm advances to next character ──
+        casting_confirm_btn.click(
+            fn=on_casting_confirm,
+            inputs=[casting_state, casting_prompt_box, scene_state, engine_ref, prev_bg_state],
+            outputs=start_outputs,
+        )
+        # ── Casting review — redo regenerates current base ────
+        redo_outputs = [vn_screen, scene_info, casting_state, casting_prompt_box]
+        casting_redo_btn.click(
+            fn=on_casting_redo,
+            inputs=[casting_state, casting_prompt_box],
+            outputs=redo_outputs,
+        )
 
         # ── Free-text action (fallback when no choices, or "Write your
         #    own action…"). Clears the box server-side via the extra output. ─
