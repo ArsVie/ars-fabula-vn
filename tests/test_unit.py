@@ -256,11 +256,11 @@ class TestCastLock:
         text = (
             '[Yuki]: "Hello!"\n'
             '[Totoro]: "I should not be here"\n'
-            '[Haruki]: "Hey!"\n'
+            '[Sakura]: "Hey!"\n'
         )
         cleaned = _clean_noncast_dialogue(text, cast)
         assert "[Yuki]:" in cleaned
-        assert "[Haruki]:" in cleaned
+        assert "[Sakura]:" in cleaned
         assert "[Totoro]:" not in cleaned
         # Totoro's line should be replaced
         assert "someone speaks" in cleaned.lower()
