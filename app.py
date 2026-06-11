@@ -19,6 +19,15 @@ Run with:
 from __future__ import annotations
 import os
 
+# ── Hugging Face Spaces / ZeroGPU ──────────────────────────────────────
+# SPACE_ID is set by the Spaces runtime. There, the LLM runs in-process
+# via transformers (+ @spaces.GPU); llama-server/ComfyUI don't exist, and
+# their fallbacks (curated cast, preset backgrounds, mock voice) apply.
+ON_SPACES = bool(os.getenv("SPACE_ID"))
+if ON_SPACES:
+    os.environ.setdefault("ARS_FABULA_BACKEND", "transformers")
+    os.environ.setdefault("ARS_FABULA_MODEL", "google/gemma-3-4b-it")
+
 import gradio as gr
 
 from providers import get_background_provider
@@ -259,13 +268,20 @@ if __name__ == "__main__":
         except ValueError:
             pass
 
+    if ON_SPACES:
+        # ZeroGPU wants the model loaded (and placed on cuda, under its
+        # emulation layer) at startup, not lazily inside a request.
+        from model_client import preload_transformers
+        preload_transformers()
+        port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
+
     app = create_ui()
     print(f"\n🌸 Ars-Fabula VN starting on http://127.0.0.1:{port}")
     print(f"   Mock mode: {os.getenv('ARS_FABULA_BACKEND', 'server') == 'mock'}")
     print(f"   Voice: {os.getenv('ARS_FABULA_VOICE', 'mock')} · "
           f"BG: {os.getenv('ARS_FABULA_BG', 'preset')}\n")
     app.launch(
-        server_name="127.0.0.1",
+        server_name="0.0.0.0" if ON_SPACES else "127.0.0.1",
         server_port=port,
         allowed_paths=[STATIC_DIR],   # belt-and-braces; images are data URIs anyway
         css=CSS,                      # Gradio 6: css/js/theme live on launch()

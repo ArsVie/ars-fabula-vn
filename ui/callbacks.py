@@ -51,6 +51,16 @@ def make_callbacks(bg_provider: BackgroundProvider):
                  if (n or "").strip()]
 
         if cast_preset == "generated":
+            # Live sprite gen needs ComfyUI, which can't exist on HF Spaces /
+            # ZeroGPU (no external GPU servers) — use the curated cast there
+            # instead of walking the review flow with placeholder art.
+            from cast_pipeline import _comfy_health
+            if not _comfy_health():
+                print("[cast] ComfyUI unreachable — generated cast falls "
+                      "back to curated")
+                cast_preset = "curated"
+
+        if cast_preset == "generated":
             from cast_pipeline import (set_fast_generation, build_custom_specs,
                                        _generate_base_with_face_gate, _char_dir,
                                        PRESET_CHARACTERS)

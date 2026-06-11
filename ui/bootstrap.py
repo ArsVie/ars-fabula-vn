@@ -163,6 +163,15 @@ def _try_real_llm():
         print("[app] ARS_FABULA_BACKEND=mock is set — mock engine forced "
               "(unset the env var for the real model)")
         return None
+    if cfg.backend == "transformers":
+        # In-process model (HF Spaces / ZeroGPU) — no server, no /health.
+        client = get_model(cfg)
+        if client.health():
+            print("[app] In-process transformers model ready")
+            return client
+        print("[app] transformers backend configured but no model loaded "
+              "— falling back to mock")
+        return None
     try:
         if ensure_llm(cfg, timeout=300):
             client = get_model(cfg)

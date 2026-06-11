@@ -4,10 +4,16 @@ model_client.py — the model-independence layer.
 The engine depends on the `ModelClient` interface, never on a concrete model or URL.
 Swap models by changing env vars; run tests with no server via MockModel.
 
-  ARS_FABULA_BACKEND  = "server" | "mock"   (default: server)
+  ARS_FABULA_BACKEND  = "server" | "transformers" | "mock"   (default: server)
   ARS_FABULA_BASE_URL = "http://localhost:8110/v1"
   ARS_FABULA_MODEL    = "gemma-12b"  (later: "gemma-26b-a4b", "gemma-31b")
+                        for the transformers backend: a HF repo id,
+                        e.g. "google/gemma-3-4b-it"
   ARS_FABULA_API_KEY  = "not-needed"
+
+The "transformers" backend runs the model in-process — built for Hugging
+Face Spaces / ZeroGPU, where external servers (llama-server, ComfyUI)
+cannot hold a GPU. GPU time is only granted inside @spaces.GPU calls.
 """
 from __future__ import annotations
 import os
@@ -97,6 +103,112 @@ class LlamaServerClient(ModelClient):
             return False
 
 
+# ── Transformers backend: in-process model (HF Spaces / ZeroGPU) ────────
+#
+# On ZeroGPU the model must be loaded and placed on "cuda" at startup
+# (a CUDA emulation layer makes that legal outside @spaces.GPU); the real
+# GPU only exists inside the @spaces.GPU-decorated generate call. The
+# decorator is a no-op off-Spaces, so the same code path runs anywhere
+# torch + transformers are installed.
+
+# HF repo ids tried in order when ARS_FABULA_MODEL isn't itself a repo id.
+# Gemma is the project's model family but is license-gated — if the Space
+# token can't access it, fall through to an ungated small model rather
+# than dropping the whole demo to mock.
+_HF_MODEL_CANDIDATES = [
+    "google/gemma-3-4b-it",
+    "Qwen/Qwen3-4B-Instruct-2507",
+]
+
+_HF_STATE: dict = {"model": None, "tokenizer": None, "id": None}
+
+try:
+    import spaces as _spaces
+    _gpu_decorator = _spaces.GPU(duration=120)
+except ImportError:
+    _gpu_decorator = lambda f: f
+
+
+def _hf_load(model_id: Optional[str] = None):
+    """Load the chat model once, module-wide. Returns the loaded repo id
+    or None if nothing could be loaded (no torch, gated repo, etc.)."""
+    if _HF_STATE["model"] is not None:
+        return _HF_STATE["id"]
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as e:
+        print(f"[hf] transformers backend unavailable ({e})")
+        return None
+
+    candidates = [model_id] if model_id and "/" in model_id else list(_HF_MODEL_CANDIDATES)
+    for mid in candidates:
+        try:
+            print(f"[hf] loading {mid}…")
+            tok = AutoTokenizer.from_pretrained(mid)
+            model = AutoModelForCausalLM.from_pretrained(mid, dtype=torch.bfloat16)
+            if torch.cuda.is_available():
+                model = model.to("cuda")
+            model.eval()
+            _HF_STATE.update(model=model, tokenizer=tok, id=mid)
+            print(f"[hf] {mid} ready on {model.device}")
+            return mid
+        except Exception as e:
+            print(f"[hf] could not load {mid}: {type(e).__name__}: {e}")
+    return None
+
+
+@_gpu_decorator
+def _hf_generate(messages: list[dict], max_new_tokens: int,
+                 temperature: float) -> str:
+    import torch
+    tok, model = _HF_STATE["tokenizer"], _HF_STATE["model"]
+    inputs = tok.apply_chat_template(
+        messages, add_generation_prompt=True,
+        return_tensors="pt", return_dict=True,
+    ).to(model.device)
+    with torch.inference_mode():
+        out = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=temperature > 0,
+            temperature=max(temperature, 1e-3),
+            top_p=0.95,
+        )
+    return tok.decode(out[0][inputs["input_ids"].shape[-1]:],
+                      skip_special_tokens=True)
+
+
+class TransformersClient(ModelClient):
+    """In-process HF transformers chat model (the ZeroGPU path)."""
+
+    def __init__(self, config: Optional[ModelConfig] = None):
+        self.cfg = config or ModelConfig.from_env()
+        self._loaded_id = _hf_load(self.cfg.model)
+
+    def chat(self, messages, tools=None, **kw) -> dict:
+        if not self.health():
+            raise RuntimeError("transformers backend has no loaded model")
+        text = _hf_generate(
+            messages,
+            max_new_tokens=kw.get("max_tokens", self.cfg.max_tokens),
+            temperature=kw.get("temperature", self.cfg.temperature),
+        )
+        return {"role": "assistant", "content": text}
+
+    def health(self) -> bool:
+        return _HF_STATE["model"] is not None
+
+
+def preload_transformers() -> bool:
+    """Warm the in-process model at app startup (ZeroGPU wants the CUDA
+    placement done at module/startup time, not lazily mid-request)."""
+    cfg = ModelConfig.from_env()
+    if cfg.backend != "transformers":
+        return False
+    return _hf_load(cfg.model) is not None
+
+
 # ── Mock backend: scripted, no server (for unit/CI tests) ───────────────
 
 class MockModel(ModelClient):
@@ -146,6 +258,8 @@ def get_model(config: Optional[ModelConfig] = None) -> ModelClient:
     cfg = config or ModelConfig.from_env()
     if cfg.backend == "mock":
         return MockModel()
+    if cfg.backend == "transformers":
+        return TransformersClient(cfg)
     return LlamaServerClient(cfg)
 
 
@@ -246,7 +360,10 @@ def _win_health(cfg: ModelConfig) -> bool:
 def release_vram(config: Optional[ModelConfig] = None) -> bool:
     """Stop/evict the LLM so ComfyUI can load. Returns True if it acted."""
     cfg = config or ModelConfig.from_env()
-    if cfg.backend == "mock":
+    # mock has nothing to stop; transformers is in-process — on ZeroGPU the
+    # GPU is granted per-call and released automatically, so the whole
+    # stop/relaunch swap dance does not apply.
+    if cfg.backend in ("mock", "transformers"):
         return False
     mode = _llm_manage_mode(cfg)
     if mode == "none":
@@ -320,6 +437,9 @@ def ensure_llm(config: Optional[ModelConfig] = None, timeout: int = 300) -> bool
     cfg = config or ModelConfig.from_env()
     if cfg.backend == "mock":
         return False
+    if cfg.backend == "transformers":
+        # In-process model: there is no server to relaunch or poll.
+        return _HF_STATE["model"] is not None or preload_transformers()
     if _win_health(cfg):
         return True
 
