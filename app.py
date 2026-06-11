@@ -50,7 +50,7 @@ STATIC_DIR = os.path.join(PROJECT_DIR, "static")
 DEFAULT_CAST = cast_to_dict(load_curated_cast())
 
 
-def make_initial_scene(cast=None) -> SceneState:
+def make_initial_scene(cast=None, player_name: str = "Player") -> SceneState:
     if cast is None:
         cast = DEFAULT_CAST
     return SceneState(
@@ -60,6 +60,7 @@ def make_initial_scene(cast=None) -> SceneState:
         mood="peaceful",
         turn=0,
         chapter="Prologue",
+        player_name=player_name,
     )
 
 
@@ -111,7 +112,7 @@ def thumb_data_uri(path: Optional[str], height: int = 160) -> str:
 
 # ── Mock VN LLM ───────────────────────────────────────────────────────
 
-def _make_mock_engine(cast: dict[str, CastMember]) -> MockModel:
+def _make_mock_engine(cast: dict[str, CastMember], player_name: str = "Player") -> MockModel:
     """Create a MockModel that generates varied multi-character VN scenes.
 
     Exercises enter_character/exit_character across beats to verify per-beat
@@ -199,7 +200,7 @@ def _make_mock_engine(cast: dict[str, CastMember]) -> MockModel:
                 f'[TOOL: enter_character character="{yuki}"]\n\n'
                 f'[TOOL: advance_scene description="The bell rings, signalling the end of another school day. Students begin packing their bags, the air filled with chatter and the shuffle of papers. Sunlight streams through the tall windows." background="classroom" mood="peaceful"]\n\n'
                 f'[TOOL: set_expression character="{yuki}" expression="smile"]\n\n'
-                f'[{yuki}]: "Hey! Ready to head out?"\n\n'
+                f'[{yuki}]: "Hey {player_name}! Ready to head out?"\n\n'
                 f'They pack their bag with practiced ease, glancing at you expectantly.\n\n'
                 f'[TOOL: enter_character character="{haruki}"]\n\n'
                 f'[TOOL: set_expression character="{haruki}" expression="laugh"]\n\n'
@@ -254,7 +255,7 @@ def build_engine(cast: dict[str, CastMember], scene: SceneState) -> tuple[VNEngi
     if real:
         return VNEngine(model=real, cast=cast, scene=scene, voice=voice), "real LLM"
 
-    mock = _make_mock_engine(cast)
+    mock = _make_mock_engine(cast, player_name=scene.player_name)
     print("[app] Using MOCK VN engine (no server needed)")
     return VNEngine(model=mock, cast=cast, scene=scene, voice=voice), "mock LLM"
 
@@ -295,7 +296,9 @@ CSS = """
   background: var(--bg-void) !important;
   color: var(--text-primary) !important;
   font-family: var(--font-ui) !important;
-  max-width: 1100px !important;   /* centered stage, not full-bleed */
+  width: 80% !important;             /* fixed fraction, not max-only */
+  max-width: 1400px !important;      /* safety cap on ultra-wide monitors */
+  min-width: 720px !important;       /* prevent collapse on small viewports */
   margin: 0 auto !important;
 }
 body { background: var(--bg-void) !important; }
@@ -396,8 +399,10 @@ body { background: var(--bg-void) !important; }
   color: var(--text-primary);
   font-size: 1.15rem;
   line-height: 1.7;
-  margin: 0;
-  text-indent: 1.6em;   /* sangría — first-line indent on dialogue/narration */
+  margin: 0 auto;        /* centered inside dialogue box */
+  text-align: center;    /* centered lines */
+  max-width: 80%;        /* 80% of parent .vn-dialogue */
+  text-indent: 0;
 }
 .vn-text.narrator {
   font-style: italic;
@@ -1083,6 +1088,28 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 }
 .vn-title-begin:hover { box-shadow: 0 0 22px var(--border-glow) !important; }
 
+/* ── Title screen — player name input ── */
+.vn-title-name-row { margin-top: 8px; }
+.vn-title-name-input {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border-mid);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  padding: 8px 14px;
+  border-radius: 3px;
+  text-align: center;
+  width: 220px;
+  transition: border-color 0.15s;
+}
+.vn-title-name-input:focus {
+  border-color: var(--border-accent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--border-glow);
+}
+.vn-title-name-input::placeholder { color: var(--text-muted); }
+
 /* ── Choice restyle (scrim + accent bar, dialogue voice) ── */
 .vn-choice-btn {
   background: rgba(8,8,26,0.55) !important;
@@ -1109,7 +1136,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
    wrapper (an earlier version had no positioned ancestor and the box flew
    across the viewport). ── */
 #stage { position: relative !important; gap: 0 !important; padding: 0 !important;
-         margin-bottom: 8px !important; }
+         margin-bottom: 8px !important; width: 100% !important; }
 /* The gr.HTML wrapper insets the canvas by 12px each side; remove it so the
    canvas spans the full stage width and the free-text bar (70% of the stage)
    lines up with the choices (70% of the canvas). */
@@ -1488,6 +1515,9 @@ document.addEventListener('click', function(e) {
     if (begin) {
         e.preventDefault();
         window._vnUi.panel = null;
+        // Sync the name input to the hidden Gradio textbox before starting
+        const nameInput = document.querySelector('.vn-title-name-input');
+        if (nameInput) setHiddenVal('#player-name-box', nameInput.value.trim() || 'Player');
         // 150ms lets the preset input event reach the server first
         setTimeout(function() { clickHidden('#start-btn-hidden'); }, 150);
         return;
@@ -1598,6 +1628,9 @@ def _title_screen_html() -> str:
             <div class="vn-title-cast-choice">
                 <button class="vn-title-opt active" data-preset="generated">Generated Cast</button>
                 <button class="vn-title-opt" data-preset="curated">Curated Cast</button>
+            </div>
+            <div class="vn-title-name-row">
+                <input type="text" class="vn-title-name-input" placeholder="Your name…" maxlength="24" value="Player">
             </div>
             <button class="vn-title-begin">Begin</button>
         </div>
@@ -2139,6 +2172,7 @@ def _make_callbacks(bg_provider: BackgroundProvider):
 
     def on_start(cast_preset: str,
                  casting_state,
+                 player_name: str = "Player",
                  n1: str = "", c1: str = "", t1: str = "",
                  n2: str = "", c2: str = "", t2: str = "",
                  n3: str = "", c3: str = "", t3: str = "",
@@ -2230,6 +2264,7 @@ def _make_callbacks(bg_provider: BackgroundProvider):
             cast=cast, present=[],
             background="classroom", mood="peaceful",
             turn=0, chapter="Prologue",
+            player_name=player_name,
         )
         engine, status = build_engine(cast, scene)
         pre_expr, pre_bg = dict(scene.expressions), scene.background
@@ -2324,6 +2359,7 @@ def _make_callbacks(bg_provider: BackgroundProvider):
             cast=cast, present=[],
             background="classroom", mood="peaceful",
             turn=0, chapter="Prologue",
+            player_name=_scene.player_name if _scene else "Player",
         )
         engine, status = build_engine(cast, scene)
         pre_expr, pre_bg = dict(scene.expressions), scene.background
@@ -2559,6 +2595,8 @@ def create_ui():
         # them and break the JS bridge)
         preset_box = gr.Textbox(value="generated", visible="hidden",
                                 interactive=True, elem_id="preset-box")
+        player_name_box = gr.Textbox(value="Player", visible="hidden",
+                                     interactive=True, elem_id="player-name-box")
         start_btn = gr.Button("Begin", visible="hidden",
                               elem_id="start-btn-hidden")
         save_slot = gr.Number(value=0, minimum=0, maximum=4, step=1,
@@ -2603,7 +2641,7 @@ def create_ui():
 
         # ── Event wiring ───────────────────────────────────────
         start_btn.click(fn=on_start,
-                        inputs=[preset_box, casting_state] + card_fields + [fast_gen],
+                        inputs=[preset_box, casting_state, player_name_box] + card_fields + [fast_gen],
                         outputs=start_outputs)
         # Cast Setup is a main-menu tool: hide it once a game begins,
         # bring it back on Reset (which returns to the title).

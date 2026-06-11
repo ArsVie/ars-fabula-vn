@@ -15,6 +15,10 @@ The following characters exist in this story. They are the ENTIRE cast. You may 
 
 {cast_descriptions}
 
+## THE PLAYER
+
+The player is named {player_name}. They are the protagonist — the characters speak to them directly, react to their choices, and form relationships with them. The player is not a sprite; they are the first-person perspective of the story. When characters address the player, use direct address or "you" naturally. Do not give the player a physical description unless the user explicitly provides one.
+
 ## CAST-LOCK RULE — STRICT ENFORCEMENT
 
 This is the most important rule: you may ONLY reference characters listed above. If you want a character to react, speak, or appear, they must already be in the cast. Never invent a new classmate, teacher, family member, or stranger without an existing sprite. If the story needs an unnamed background presence (crowd noise, distant voice), use "someone" or a generic description — never give them a name or personality.
@@ -64,9 +68,9 @@ Your response is a VN scene. It follows this structure:
 ## THE SCENE TURN BEAT
 
 The most important moment in the VN is the scene turn. When the player makes a choice, the world should respond visibly:
-- The background changes (call advance_scene with new background/mood)
+- The background changes if appropriate (call advance_scene with new background/mood)
 - The character reacts (call set_expression — their face should reflect their response)
-- The mood shifts (update the mood tag)
+- The mood shifts if appropriate (update the mood tag)
 - Write the character's reaction as voiced dialogue with emotional weight
 
 This is the VN's soul beat. Make it count every time.
@@ -118,6 +122,8 @@ VN_SYSTEM_PROMPT_SHORT = """You're an anime visual novel narrator. Write slice-o
 CAST (locked):
 {cast_descriptions}
 
+PLAYER: {player_name} is the protagonist. Characters address them directly.
+
 Tools available (use [TOOL: name args=val] format):
 - advance_scene description="..." background="key" mood="tag"
 - set_background background="key"
@@ -153,7 +159,7 @@ TAG RULES (important):
 - Plain comma-separated tags ONLY. Do NOT use weighted syntax like (tag:1.2) — weighting is unreliable on this model.
 - DO NOT include framing, camera, expression, or background tags (e.g. upper body, full body, portrait, profile, from behind, looking at viewer, simple background) — the pipeline locks those automatically.
 - Slice-of-life school setting: prefer school uniforms unless the concept says otherwise.
-
+- Eye and hair color are a must in every design. Vary them across characters to help visual distinction.
 Design sensibly from the concept: "childhood friend" suggests warm and approachable (e.g. brown hair, medium hair, ahoge, bright eyes, cheerful aura); "cool senpai" suggests tall, sharp eyes, composed; "shy bookworm" suggests glasses, long bangs, cardigan, timid aura. Invent a coherent, distinctive design — vary hair colors across requests when plausible.
 """
 
@@ -187,6 +193,7 @@ def build_state_banner(scene) -> str:
 
     lines = ["[STATE]"]
     lines.append(f"Chapter: {scene.chapter} · Turn: {scene.turn}")
+    lines.append(f"Player: {scene.player_name}")
     lines.append(f"Background: {scene.background} · Mood: {scene.mood}")
     lines.append(f"Present: {', '.join(scene.present) if scene.present else '(none)'}")
 
@@ -209,7 +216,7 @@ def build_state_banner(scene) -> str:
     return "\n".join(lines)
 
 
-def build_full_prompt(scene, cast, player_choice_text: str = "") -> tuple[str, str]:
+def build_full_prompt(scene, cast, player_choice_text: str = "", player_name: str = "Player") -> tuple[str, str]:
     """Build the system + user prompt pair for a model call.
 
     Args:
@@ -221,7 +228,7 @@ def build_full_prompt(scene, cast, player_choice_text: str = "") -> tuple[str, s
         (system_prompt, user_prompt) tuple.
     """
     cast_desc = build_cast_descriptions(cast)
-    system = VN_SYSTEM_PROMPT.format(cast_descriptions=cast_desc)
+    system = VN_SYSTEM_PROMPT.format(cast_descriptions=cast_desc, player_name=player_name)
     state_banner = build_state_banner(scene)
 
     if player_choice_text:

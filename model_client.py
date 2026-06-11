@@ -5,7 +5,7 @@ The engine depends on the `ModelClient` interface, never on a concrete model or 
 Swap models by changing env vars; run tests with no server via MockModel.
 
   ARS_FABULA_BACKEND  = "server" | "mock"   (default: server)
-  ARS_FABULA_BASE_URL = "http://localhost:8111/v1"
+  ARS_FABULA_BASE_URL = "http://localhost:8110/v1"
   ARS_FABULA_MODEL    = "gemma-12b"  (later: "gemma-26b-a4b", "gemma-31b")
   ARS_FABULA_API_KEY  = "not-needed"
 """
@@ -25,7 +25,7 @@ import requests
 @dataclass
 class ModelConfig:
     backend: str = "server"
-    base_url: str = "http://localhost:8111/v1"
+    base_url: str = "http://localhost:8110/v1"
     model: str = "gemma-12b"
     api_key: str = "not-needed"
     temperature: float = 0.8
@@ -36,7 +36,7 @@ class ModelConfig:
     def from_env(cls) -> "ModelConfig":
         return cls(
             backend=os.getenv("ARS_FABULA_BACKEND", "server"),
-            base_url=os.getenv("ARS_FABULA_BASE_URL", "http://localhost:8111/v1"),
+            base_url=os.getenv("ARS_FABULA_BASE_URL", "http://localhost:8110/v1"),
             model=os.getenv("ARS_FABULA_MODEL", "gemma-12b"),
             api_key=os.getenv("ARS_FABULA_API_KEY", "not-needed"),
             temperature=float(os.getenv("ARS_FABULA_TEMPERATURE", "0.8")),
@@ -172,7 +172,7 @@ _DEFAULT_LLAMA_MODEL_WIN = r"C:\Users\vruizes\Downloads\gemma-4-12b-it-IQ4_XS.gg
 # output for the VN (thinking tokens just add latency to bracket emission).
 _DEFAULT_LLAMA_ARGS = ("-ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 16384 "
                        "--reasoning off -np 1 --cache-ram 0 "
-                       "--host 0.0.0.0 --port 8111")
+                       "--host 0.0.0.0 --port 8110")
 
 
 def _is_wsl() -> bool:

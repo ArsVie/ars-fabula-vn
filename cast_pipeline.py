@@ -54,7 +54,7 @@ GENERATED_DIR = os.path.join(PROJECT_DIR, "static", "sprites", "generated")
 # Anima-tuned (per the June 2026 ADT/LDG synthesis): pony/score_ quality
 # tags DEGRADE Anima output; `absurdres` is the only quality tag that helps.
 # `safe` is the SFW content rating. (Override via env if you re-tune.)
-QUALITY = os.getenv("ARS_FABULA_QUALITY", "absurdres, safe")
+QUALITY = os.getenv("ARS_FABULA_QUALITY", "absurdres")
 NEGATIVE = os.getenv("ARS_FABULA_NEGATIVE",
                      "worst quality, low quality, blurry, jpeg artifacts, "
                      "sepia, bad anatomy, ugly, deformed")
@@ -71,7 +71,7 @@ SCHEDULER = os.getenv("ARS_FABULA_SCHEDULER", "simple")
 # `@artistname` danbooru artist tags here (or via env) to narrow further.
 STYLE_TAGS = os.getenv(
     "ARS_FABULA_STYLE",
-    "anime style, cel shading, detailed",
+    "anime style, cel shading, detailed, soft lighting",
 )
 
 # Full-body base canvas (taller than the old 512x768). We generate the whole
@@ -147,7 +147,6 @@ SPRITE_POSE_TAGS = ("solo, full body, standing, full length, "
 SPRITE_NEGATIVE = (f"{NEGATIVE}, close-up, portrait, profile, from behind, "
                    "from above, from below, dutch angle, multiple views, "
                    "multiple girls, multiple boys, 2girls, 2boys, "
-                   "large breasts, wide hips, "
                    "text, watermark, signature, out of frame")
 
 
@@ -225,7 +224,7 @@ PRESET_CHARACTERS: dict[str, dict] = {
     },
     "sakura": {
         "identity_prompt": build_identity_prompt(
-            "1girl, sakura haruno, long pink hair, side ponytail, "
+            "1girl, long pink hair, side ponytail, "
             "green eyes, fair skin, freckles, high school uniform, white shirt, "
             "pink bow, cheerful genki energy, bubbly"
         ),
@@ -251,20 +250,27 @@ PRESET_CHARACTERS: dict[str, dict] = {
     },
 }
 
-# Expression prompts fed to the FaceDetailer (per the validated expression
-# sheet's notes — embarrassed uses spiral eyes, matching the curated art).
+# Expression prompts fed to the FaceDetailer. Each is engineered to read
+# DISTINCTLY from the others along three axes — eyes, mouth, brows — plus a
+# signature effect, so the 7 don't blur together:
+#   eyes:  open / soft / >_< squint / wide+shrunk / averted
+#   mouth: closed / slight / open grin / frown / wavy
+#   extra: blush / tears / anger vein / sweatdrops
+# NOTE on closed eyes: the face detector runs on the open-eyed BASE image,
+# THEN inpaints the expression — so closed/squint eyes in the prompt do NOT
+# break detection (earlier worry was wrong). Plain tags only (no weights).
 EXPRESSION_TAGS = {
-    "neutral": "neutral expression, looking at viewer, relaxed",
-    "smile": "smile, open mouth, happy, looking at viewer, blush",
-    # NOTE: no "eyes closed" tag — a fully closed-eye laughing anime face is
-    # what face_yolov8n fails to detect, so FaceDetailer skips it and "laugh"
-    # comes out unchanged/broken. (We can't soften it with a weight either —
-    # weighted tags are unreliable on Anima.) Open-eyed laughing reads fine.
-    "laugh": "laughing, open mouth, wide smile, happy, joyful, blush",
-    "sad": "sad, downturned eyebrows, tears, wet eyes, looking down",
-    "angry": "angry, furrowed eyebrows, glare, gritting teeth, frown",
-    "surprised": "surprised, wide eyes, open mouth, shocked, eyebrows raised",
-    "embarrassed": "embarrassed, heavy blush, (@_@), spiral eyes, averted eyes, sweatdrop",
+    "neutral":     "neutral expression, calm, looking at viewer, relaxed, closed mouth",
+    # smile = GENTLE: soft open eyes, closed/slight mouth, light blush —
+    # deliberately NOT open-mouthed, so it can't be confused with laugh.
+    "smile":       "soft smile, closed mouth, gentle eyes, happy, light blush, looking at viewer",
+    # laugh = BIG: >_< scrunched-shut eyes + wide open mouth — the joyful belly
+    # laugh, clearly different from the gentle smile.
+    "laugh":       "laughing, wide open mouth, >_<, closed eyes, tightly closed eyes, joyful, big grin, blush",
+    "sad":         "sad, frown, downturned eyebrows, teary eyes, tears, looking down",
+    "angry":       "angry, v-shaped eyebrows, furrowed brow, anger vein, gritting teeth, glaring",
+    "surprised":   "surprised, wide eyes, shrunken pupils, open mouth, shocked, raised eyebrows",
+    "embarrassed": "embarrassed, heavy blush, (@_@), spiral eyes, averted eyes, flying sweatdrops, nervous",
 }
 
 # FaceDetailer strength — the sheet's note: 0.4–0.7, lower = subtler.
@@ -320,8 +326,8 @@ _CONCEPT_DESIGNS = [
 ]
 
 _DEFAULT_DESIGN = ("girl",
-                   "1girl, {hair} hair, medium hair, expressive eyes, fair skin, "
-                   "school uniform, white shirt, distinctive accessory",
+                   "1girl, {hair} hair, expressive eyes, fair skin, "
+                   "school uniform, white shirt",
                    "classmate")
 _HAIR_ROTATION = ["chestnut", "ash blonde", "teal", "auburn", "lavender", "black"]
 
@@ -770,6 +776,7 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
         "sam_threshold": 0.93, "sam_bbox_expansion": 0,
         "sam_mask_hint_threshold": 0.7, "sam_mask_hint_use_negative": "False",
         "drop_size": 10, "wildcard": "", "cycle": 1,
+        "noise_mask_feather": 20,
         "bbox_detector": ["70", 0], "sam_model_opt": ["73", 0],
     }
 

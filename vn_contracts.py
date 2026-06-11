@@ -90,6 +90,7 @@ class SceneState:
     turn: int = 0
     choices: list[Choice] = field(default_factory=list)
     affection_flags: list[AffectionFlag] = field(default_factory=list)
+    player_name: str = "Player"
 
     # Save slot metadata
     save_slot: Optional[int] = None
@@ -159,6 +160,7 @@ class SaveData:
     affection_snapshot: list[tuple[str, str, bool]]
     expressions: dict[str, str] = field(default_factory=dict)
     choices_snapshot: list[dict] = field(default_factory=list)
+    player_name: str = "Player"
 
     @classmethod
     def from_scene(cls, scene: SceneState) -> "SaveData":
@@ -181,6 +183,7 @@ class SaveData:
                 "next_mood": c.next_mood,
                 "expression_changes": dict(c.expression_changes),
             } for c in scene.choices],
+            player_name=scene.player_name,
         )
 
     def to_dict(self) -> dict:
@@ -205,6 +208,7 @@ class SaveData:
         scene.affection_flags = [AffectionFlag(c, f, v)
                                  for c, f, v in self.affection_snapshot]
         scene.expressions = dict(self.expressions)
+        scene.player_name = self.player_name
         scene.choices = []
         for cd in self.choices_snapshot:
             choice = Choice(

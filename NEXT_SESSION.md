@@ -8,10 +8,10 @@ The app runs end-to-end in both mock and real-LLM modes:
 
 ```bash
 ARS_FABULA_BACKEND=mock   python app.py        # no server
-ARS_FABULA_BACKEND=server python app.py        # real llama-server on :8111
+ARS_FABULA_BACKEND=server python app.py        # real llama-server on :8110
 ```
 
-Verified working (mock + real model on `127.0.0.1:8111`):
+Verified working (mock + real model on `127.0.0.1:8110`):
 
 - **App launches** clean on Gradio **6.16** (`visible="hidden"`, `gr.skip()`, `gr.Number` all valid).
 - **Casting beat** → opening scene renders (bg + 3 sprites as base64 data URIs).

@@ -22,14 +22,14 @@ python app.py 7890                          # override port (also GRADIO_PORT en
 For real cast generation you must have **ComfyUI running** (WSL, `:8188`). The LLM is auto-managed (started/stopped) by the app during the casting beat. The app degrades gracefully: if the LLM server, ComfyUI, or a TTS server is unreachable, each falls back to a mock / previously-baked / curated / placeholder path. **It always runs and always renders** — images are embedded as base64 data URIs (no Gradio file-route dependency).
 
 ### Environment variables
-Model: `ARS_FABULA_BACKEND` (`server`|`mock`), `ARS_FABULA_BASE_URL` (default `http://localhost:8111/v1`), `ARS_FABULA_MODEL`, `ARS_FABULA_API_KEY`, `ARS_FABULA_TEMPERATURE`, `ARS_FABULA_MAX_TOKENS`, `ARS_FABULA_TIMEOUT`.
+Model: `ARS_FABULA_BACKEND` (`server`|`mock`), `ARS_FABULA_BASE_URL` (default `http://localhost:8110/v1`), `ARS_FABULA_MODEL`, `ARS_FABULA_API_KEY`, `ARS_FABULA_TEMPERATURE`, `ARS_FABULA_MAX_TOKENS`, `ARS_FABULA_TIMEOUT`.
 Generation: `ARS_FABULA_COMFY` (ComfyUI URL), `ARS_FABULA_SAMPLER` (default `dpm_2_ancestral`), `ARS_FABULA_SCHEDULER` (`simple`), `ARS_FABULA_STYLE` (shared style tags, default `anime style, cel shading, detailed`), `ARS_FABULA_SPRITE_FRAC` (upper-body crop fraction, 0.62), `ARS_FABULA_REGEN` (force re-bake), `ARS_FABULA_QUALITY`, `ARS_FABULA_NEGATIVE`, `ARS_FABULA_FAST_WIDTH`/`ARS_FABULA_FAST_HEIGHT` (fast-mode base resolution, default 384×672). Fast generation (lower base resolution, quicker bake; self-heal/steps unchanged) is a Cast Setup checkbox → `cast_pipeline.set_fast_generation`; fast sprites cache under `static/sprites/generated/<key>_fast/`.
 VRAM/LLM lifecycle: `ARS_FABULA_LLM_MANAGE` (`auto`|`win`|`ollama`|`none`), `ARS_FABULA_LLAMA_EXE_WIN`, `ARS_FABULA_LLAMA_MODEL_WIN`, `ARS_FABULA_LLAMA_ARGS`, `ARS_FABULA_LLM_STOP_CMD`, `ARS_FABULA_LLM_START_CMD`, `ARS_FABULA_LLM_UNLOAD_URL`.
 Media: `ARS_FABULA_VOICE` (`mock`|`kokoro`|`chatterbox`), `ARS_FABULA_BG` (`preset`|`comfyui`).
 Traces: `ARS_FABULA_TRACE` (`1`/on default, `0` disables), `ARS_FABULA_TRACE_DIR` (default `logs/traces`) — per-turn prompt→response JSONL for fine-tuning (real models only; mock skipped). See `trace_log.py`.
 
 ### External services
-- LLM: any OpenAI-compatible server at `ARS_FABULA_BASE_URL` (here: llama-server on Windows `:8111`).
+- LLM: any OpenAI-compatible server at `ARS_FABULA_BASE_URL` (here: llama-server on Windows `:8110`).
 - ComfyUI: `http://127.0.0.1:8188` (WSL) — needs Anima UNET (`anima-base-v1.0`) + Qwen CLIP/VAE, Impact-Pack (FaceDetailer, UltralyticsDetectorProvider `bbox/face_yolov8n.pt`, SAM), and `rembg`+`onnxruntime` in the venv (`~/.u2net/isnet-anime.pth`).
 - Kokoro TTS `:11436` · Chatterbox TTS `:11437`.
 

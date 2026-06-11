@@ -582,7 +582,8 @@ class VNEngine:
         self.scene.choices = []
 
         # 1. Build prompt
-        system, user = build_full_prompt(self.scene, self.cast, player_choice_text)
+        system, user = build_full_prompt(self.scene, self.cast, player_choice_text,
+                                         player_name=self.scene.player_name)
 
         # Also inject the current scene description for context
         if self.scene.description:
