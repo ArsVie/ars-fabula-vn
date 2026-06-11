@@ -314,7 +314,7 @@ def release_vram(config: Optional[ModelConfig] = None) -> bool:
     return False
 
 
-def ensure_llm(config: Optional[ModelConfig] = None, timeout: int = 120) -> bool:
+def ensure_llm(config: Optional[ModelConfig] = None, timeout: int = 300) -> bool:
     """Make sure the LLM server is up and answering /health, relaunching it
     if we manage it. Returns True when healthy, False on give-up."""
     cfg = config or ModelConfig.from_env()
