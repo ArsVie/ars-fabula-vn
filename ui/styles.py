@@ -120,7 +120,12 @@ body.cast-setup-active .vn-cast-setup {
 .vn-sprite {
   height: 86%;               /* heads near the top, torso behind the box */
   width: auto;
-  max-width: 28%;            /* 3-4 characters fit without side clipping */
+  max-width: 34%;            /* must exceed the widest bake canvas's display
+                                width — if this cap binds, object-fit:contain
+                                letterboxes the sprite and SHRINKS that
+                                character's face below the equal-face target.
+                                Bake canvases now widen to fit wide poses
+                                (cast_pipeline fig_w), so keep headroom here. */
   object-fit: contain;
   object-position: bottom center;
   /* No per-render entrance animation: the canvas HTML is rebuilt every beat,

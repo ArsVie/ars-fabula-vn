@@ -127,16 +127,23 @@ def _char_dir(key: str) -> str:
 # measured DOWN from the head crown. ~0.62 = head + torso (waist-up).
 UPPER_BODY_FRAC = float(os.getenv("ARS_FABULA_SPRITE_FRAC", "0.62"))
 
-# Face-anchored framing — preserves REAL height differences across the cast.
+# Face-anchored ZOOMED framing — equal faces, cropped legs, real height gaps.
 # Using the face-gate mask, every sprite is scaled so the detected FACE is the
-# SAME pixel size, then composited FEET-DOWN into a common-size canvas. Because
-# heads are then a constant size and feet sit on a shared baseline, a character
-# drawn taller (smaller face ⇒ more head-heights of body) has their head reach
-# higher in the frame — so they render TALLER on canvas, while a short/chibi
-# character (bigger face) stays short. All sprites share one pixel size, so the
-# UI's uniform height-lock scales them identically and the height gap survives.
-# Falls back to the crude alpha-crown crop when no mask is available. Env-tunable.
-FACE_TARGET_FRAC = float(os.getenv("ARS_FABULA_FACE_TARGET", "0.135"))  # target face height ÷ base-image height
+# SAME fraction of the SCENE height (FACE_TARGET_FRAC), then composited so the
+# FEET sit FEET_DROP_FACES face-heights BELOW the canvas bottom (the lower legs
+# crop off-screen — the zoom). Equal faces + a shared feet baseline mean a
+# character drawn taller (smaller face ⇒ more face-heights of body) still has
+# their head reach higher in the frame, so implied heights survive the zoom.
+# All sprites share one pixel size, so the UI's uniform height-lock scales them
+# identically. Falls back to the crude alpha-crown crop when no mask exists.
+#
+# GEOMETRY LIMIT: the visible span is (figure-height-in-faces − FEET_DROP_FACES)
+# × FACE_TARGET_FRAC of the scene. The current cast measures 7.6–8.3 faces tall,
+# so 0.13 is the largest face fraction that keeps every crown on-screen with
+# feet at −2 faces; raising it toward 1/5 crops heads at the canvas top.
+FACE_TARGET_FRAC = float(os.getenv("ARS_FABULA_FACE_TARGET", "0.13"))  # face height ÷ SCENE height
+FEET_DROP_FACES = float(os.getenv("ARS_FABULA_FEET_DROP", "2.0"))      # feet this many face-heights below the bottom
+UI_SPRITE_FRAC = 0.86  # .vn-sprite { height: 86% } in ui/styles.py — canvas→scene factor
 SPRITE_CANVAS_MULT = float(os.getenv("ARS_FABULA_SPRITE_CANVAS", "1.4"))  # output canvas size ÷ base size (headroom for tall figures)
 
 # ── Sprite pose block (researched danbooru framing/pose tags) ─────────
@@ -982,16 +989,27 @@ def _frame_upper_body(char_dir: str, key: str,
             print(f"  [cast] face mask unusable for {key} ({e}); crude crop")
 
     if face_h and face_h > 1:
-        # FACE-NORMALIZED bake: scale so the face is a constant size, then drop
-        # the figure FEET-DOWN onto a shared-size canvas. Constant face + shared
-        # baseline ⇒ taller figures' heads reach higher, so they read as taller.
-        W0 = int(W * SPRITE_CANVAS_MULT)
+        # FACE-NORMALIZED ZOOMED bake: every face = FACE_TARGET_FRAC of the
+        # SCENE height (the UI shows the canvas at UI_SPRITE_FRAC of the
+        # screen, so the canvas target is FACE_TARGET_FRAC / UI_SPRITE_FRAC),
+        # and the FEET sit FEET_DROP_FACES face-heights BELOW the canvas
+        # bottom (lower legs crop off — the zoom-in). Equal faces + shared
+        # feet baseline ⇒ taller figures' heads still reach higher.
         H0 = int(H * SPRITE_CANVAS_MULT)
-        scale = (H * FACE_TARGET_FRAC) / face_h        # face → target px (same for all chars)
+        face_px = H0 * FACE_TARGET_FRAC / UI_SPRITE_FRAC   # target face height on canvas
+        scale = face_px / face_h
+        # Canvas WIDTH grows to fit the scaled figure (wide poses — drill hair,
+        # full skirts — must never hit the vertical edges; a hard clip line
+        # mid-screen looks broken). Heights stay uniform across the cast, which
+        # is what keeps faces equal under the UI height-lock; widths may vary.
+        fig_w = (union[2] - union[0]) * scale
+        W0 = max(int(W * SPRITE_CANVAS_MULT), int(fig_w) + 1 + 2 * pad)
         cx = (union[0] + union[2]) / 2.0               # figure center-x (base px)
         off_x = int(round(W0 / 2.0 - cx * scale))      # center horizontally
-        off_y = int(round(H0 - union[3] * scale))      # union bottom (feet) on the baseline
+        # union bottom (feet) lands FEET_DROP_FACES faces below the canvas edge
+        off_y = int(round(H0 + FEET_DROP_FACES * face_px - union[3] * scale))
         sw, sh = max(1, int(round(W * scale))), max(1, int(round(H * scale)))
+        crown_clip = -(off_y + union[1] * scale)       # px of head above the canvas top
         for p in paths:
             with Image.open(p) as img:
                 resized = img.convert("RGBA").resize((sw, sh), Image.LANCZOS)
@@ -999,7 +1017,11 @@ def _frame_upper_body(char_dir: str, key: str,
             canvas.paste(resized, (off_x, off_y), resized)   # mask = alpha; clips overflow
             canvas.save(p)
         print(f"  [cast] Framed {len(paths)} sprites for {key} "
-              f"(face-normalized, scale={scale:.2f}, face={face_h:.0f}px → {W0}x{H0})")
+              f"(face-normalized zoom, scale={scale:.2f}, face={face_h:.0f}px → "
+              f"{FACE_TARGET_FRAC:.0%} of scene, feet at -{FEET_DROP_FACES:g} faces, {W0}x{H0})")
+        if crown_clip > 1:
+            print(f"  [cast] WARNING: {key}'s crown overflows the canvas top by "
+                  f"{crown_clip:.0f}px — lower ARS_FABULA_FACE_TARGET or ARS_FABULA_FEET_DROP")
         return
 
     # ── Fallback: crude alpha-crown + fixed-fraction crop (no usable mask) ──
@@ -1043,7 +1065,7 @@ def generate_cast(preferences: Optional[dict] = None) -> list[CastMember]:
         comfy_free_vram()                       # room for the design LLM
         try:                                    # bring the LLM up if a prior bake killed it
             from model_client import ensure_llm
-            ensure_llm()
+            ensure_llm(timeout=300)
         except Exception as e:
             print(f"[cast] ensure_llm before design failed ({e}); designing with heuristics")
         specs = build_custom_specs(preferences["custom_cast"])   # LLM designs

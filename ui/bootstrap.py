@@ -151,20 +151,26 @@ def _make_mock_engine(cast: dict[str, CastMember], player_name: str = "Player") 
 
 def _try_real_llm():
     """Try to connect to the real model server. Returns client or None,
-    and says exactly WHY it fell back when it does."""
+    and says exactly WHY it fell back when it does.
+
+    Uses ensure_llm() under the hood so the server gets a chance to
+    finish loading its model before we give up — the one-shot /health
+    check is too fragile when the 26B MoE takes 2-3 minutes to load."""
+    from model_client import ensure_llm
+
     cfg = ModelConfig.from_env()
     if cfg.backend == "mock":
         print("[app] ARS_FABULA_BACKEND=mock is set — mock engine forced "
               "(unset the env var for the real model)")
         return None
     try:
-        client = get_model(cfg)
-        if client.health():
+        if ensure_llm(cfg, timeout=300):
+            client = get_model(cfg)
             print(f"[app] Connected to LLM server at {cfg.base_url}")
             return client
         base = cfg.base_url.rsplit("/v1", 1)[0]
         print(f"[app] No model server at {cfg.base_url} "
-              f"(GET {base}/health got no healthy reply).")
+              f"(GET {base}/health got no healthy reply after 300s).")
         print("[app] Start llama-server on that port, or set "
               "ARS_FABULA_BASE_URL to where it lives.")
     except Exception as e:

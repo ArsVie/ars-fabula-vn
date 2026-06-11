@@ -214,7 +214,7 @@ def make_callbacks(bg_provider: BackgroundProvider):
 
         # VRAM swap: unload ComfyUI, load LLM
         comfy_free_vram()
-        ensure_llm(ModelConfig.from_env())
+        ensure_llm(ModelConfig.from_env(), timeout=300)
 
         # Start the VN
         scene = SceneState(
