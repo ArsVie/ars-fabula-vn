@@ -66,12 +66,19 @@ NEGATIVE = os.getenv("ARS_FABULA_NEGATIVE",
 SAMPLER = os.getenv("ARS_FABULA_SAMPLER", "dpm_2_ancestral")
 SCHEDULER = os.getenv("ARS_FABULA_SCHEDULER", "simple")
 
+# Fixed generation seed — every base + expression starts here, so the whole
+# cast is reproducible run-to-run. Env-overridable. The face-gate / expression
+# retries still bump it locally (+attempt) to self-heal a bad draw.
+SEED = int(os.getenv("ARS_FABULA_SEED", "42"))
+
 # Shared style block — prepended to EVERY prompt (cast + backgrounds) so the
 # whole game shares one look. Generic style descriptors by default; add
 # `@artistname` danbooru artist tags here (or via env) to narrow further.
 STYLE_TAGS = os.getenv(
     "ARS_FABULA_STYLE",
-    "anime style, cel shading, detailed, soft lighting",
+    "official art, light novel illustration style, clean lineart, "
+    "soft cel shading, pastel color palette, soft lighting, "
+    "shiny detailed eyes, smooth shading",
 )
 
 # Full-body base canvas (taller than the old 512x768). We generate the whole
@@ -120,6 +127,18 @@ def _char_dir(key: str) -> str:
 # measured DOWN from the head crown. ~0.62 = head + torso (waist-up).
 UPPER_BODY_FRAC = float(os.getenv("ARS_FABULA_SPRITE_FRAC", "0.62"))
 
+# Face-anchored framing — preserves REAL height differences across the cast.
+# Using the face-gate mask, every sprite is scaled so the detected FACE is the
+# SAME pixel size, then composited FEET-DOWN into a common-size canvas. Because
+# heads are then a constant size and feet sit on a shared baseline, a character
+# drawn taller (smaller face ⇒ more head-heights of body) has their head reach
+# higher in the frame — so they render TALLER on canvas, while a short/chibi
+# character (bigger face) stays short. All sprites share one pixel size, so the
+# UI's uniform height-lock scales them identically and the height gap survives.
+# Falls back to the crude alpha-crown crop when no mask is available. Env-tunable.
+FACE_TARGET_FRAC = float(os.getenv("ARS_FABULA_FACE_TARGET", "0.135"))  # target face height ÷ base-image height
+SPRITE_CANVAS_MULT = float(os.getenv("ARS_FABULA_SPRITE_CANVAS", "1.4"))  # output canvas size ÷ base size (headroom for tall figures)
+
 # ── Sprite pose block (researched danbooru framing/pose tags) ─────────
 # Locked onto EVERY identity prompt — but ONLY the essentials: framing,
 # eye contact, and a mattable background. Body attitude (slight 3/4
@@ -136,7 +155,7 @@ UPPER_BODY_FRAC = float(os.getenv("ARS_FABULA_SPRITE_FRAC", "0.62"))
 # NOTE: NO weighted tags — (tag:weight) emphasis is inconsistent on Anima,
 # so everything here is plain comma-separated tags.
 SPRITE_POSE_TAGS = ("solo, full body, standing, full length, "
-                    "looking at viewer, neutral expression, "
+                    "looking at viewer, calm expression, "
                     "simple background, white background")
 
 # Framing failure modes, negated for BASE generation only (the FaceDetailer
@@ -206,21 +225,22 @@ PRESET_CHARACTERS: dict[str, dict] = {
                        "Has a dry sense of humor that surprises people.",
         "voice_id": "af_bella",
         "role": "classmate",
-        "seed": 42,
+        "seed": SEED,
     },
-    "haruki": {
+    "marie": {
         "identity_prompt": build_identity_prompt(
-            "1boy, haruki tanaka, short messy black hair, "
-            "brown eyes, fair skin, high school uniform, white shirt, "
-            "loose tie, sleeves rolled up, confident smirk, energetic vibe, "
-            "mischievous aura"
+            "1girl, marie, long blonde hair, drill hair, blue eyes, "
+            "fair skin, elegant, high school uniform, white shirt, "
+            "blue skirt, red ribbon, refined posture, graceful aura, "
+            "proud expression, ojou-sama"
         ),
-        "personality": "Outgoing and energetic with a mischievous streak. "
-                       "Teases people he likes. Loyal to friends. "
-                       "Acts confident but gets flustered easily, boy.",
-        "voice_id": "am_michael",   # Kokoro male voice (am_*; af_* are female)
-        "role": "classmate",
-        "seed": 43,
+        "personality": "A refined, well-bred ojou-sama from old money. Proud and "
+                       "elegant, with a signature 'ohohoho' laugh behind a raised "
+                       "hand. Competitive and a touch haughty, but genuinely caring "
+                       "underneath — she'd never admit how much she enjoys company.",
+        "voice_id": "af_sarah",
+        "role": "ojou-sama",
+        "seed": SEED,
     },
     "sakura": {
         "identity_prompt": build_identity_prompt(
@@ -233,7 +253,7 @@ PRESET_CHARACTERS: dict[str, dict] = {
                        "Perceptive despite her bubbly exterior.",
         "voice_id": "af_sky",
         "role": "best friend",
-        "seed": 44,
+        "seed": SEED,
     },
     "ryo": {
         "identity_prompt": build_identity_prompt(
@@ -246,7 +266,7 @@ PRESET_CHARACTERS: dict[str, dict] = {
                        "Has a hidden soft spot for cute things.",
         "voice_id": "am_adam",      # Kokoro male voice
         "role": "senpai",
-        "seed": 45,
+        "seed": SEED,
     },
 }
 
@@ -260,21 +280,23 @@ PRESET_CHARACTERS: dict[str, dict] = {
 # THEN inpaints the expression — so closed/squint eyes in the prompt do NOT
 # break detection (earlier worry was wrong). Plain tags only (no weights).
 EXPRESSION_TAGS = {
-    "neutral":     "neutral expression, calm, looking at viewer, relaxed, closed mouth",
-    # smile = GENTLE: soft open eyes, closed/slight mouth, light blush —
-    # deliberately NOT open-mouthed, so it can't be confused with laugh.
-    "smile":       "soft smile, closed mouth, gentle eyes, happy, light blush, looking at viewer",
-    # laugh = BIG: >_< scrunched-shut eyes + wide open mouth — the joyful belly
-    # laugh, clearly different from the gentle smile.
-    "laugh":       "laughing, wide open mouth, >_<, closed eyes, tightly closed eyes, joyful, big grin, blush",
-    "sad":         "sad, frown, downturned eyebrows, teary eyes, tears, looking down",
-    "angry":       "angry, v-shaped eyebrows, furrowed brow, anger vein, gritting teeth, glaring",
-    "surprised":   "surprised, wide eyes, shrunken pupils, open mouth, shocked, raised eyebrows",
+    # "neutral" is the DEFAULT sprite (get_sprite falls back here) AND a callable
+    # emotion — deadpan/stoic characters need a true flat affect. We avoid the bare
+    # token "neutral expression" (Anima reads it as grumpy → angry/sad drift) and use
+    # "expressionless" with relaxed brows + closed mouth so it stays flat, not cross.
+    "neutral": "expressionless, calm, looking at viewer, relaxed, closed mouth, level eyebrows",
+    # SMILE = Passive Contentment (Eyes wide and calm, subtle lip curve)
+    "smile": "gentle smile, parted lips, pleasant expression, calm eyes, looking at viewer, serene",
+    # LAUGH = Dynamic Joy (Eyes naturally squinting/crinkling from a wide, open-mouthed grin)
+    "laugh": "joyful laughter, wide open mouth, laughing expression, squinting eyes, crinkling eyes, big happy grin, radiant smile, elevated cheeks",
+    "sad": "sad expression, deep frown, downturned mouth, worried eyebrows, downcast eyes, casting eyes downward, distressed",
+    "angry": "angry glare, slanting v-shaped eyebrows, furrowed brow, gritting teeth, tight jaw, intense eyes, looking at viewer",
+    "surprised": "surprised expression, wide-eyed, shocked, shrunken pupils, slightly open gasping mouth, raised elevated eyebrows",
     "embarrassed": "embarrassed, heavy blush, (@_@), spiral eyes, averted eyes, flying sweatdrops, nervous",
 }
 
 # FaceDetailer strength — the sheet's note: 0.4–0.7, lower = subtler.
-EXPRESSION_DENOISE = 0.5
+EXPRESSION_DENOISE = 0.6
 
 # Model files (must match the names installed in ComfyUI — taken verbatim
 # from the validated workflow).
@@ -444,7 +466,7 @@ def build_custom_specs(cards: list[dict]) -> list[tuple[str, dict]]:
             "personality": design["personality"],
             "voice_id": voice,
             "role": design["role"],
-            "seed": _stable_seed(name, identity_prompt),
+            "seed": SEED,
         }))
     return specs
 
@@ -945,17 +967,52 @@ def _frame_upper_body(char_dir: str, key: str,
     if union is None:
         return
 
+    # Detected face height (base px), from the face-gate mask if present.
+    face_h = None
+    mask_path = os.path.join(char_dir, "_facegate_mask.png")
+    if os.path.exists(mask_path):
+        try:
+            with Image.open(mask_path) as m:
+                ml = m.convert("L")
+                _, mH = ml.size
+                fb = ml.getbbox()           # bbox of the white (detected-face) region
+            if fb and mH:
+                face_h = (fb[3] - fb[1]) * (H / mH)   # scale mask→sprite if res differs
+        except Exception as e:
+            print(f"  [cast] face mask unusable for {key} ({e}); crude crop")
+
+    if face_h and face_h > 1:
+        # FACE-NORMALIZED bake: scale so the face is a constant size, then drop
+        # the figure FEET-DOWN onto a shared-size canvas. Constant face + shared
+        # baseline ⇒ taller figures' heads reach higher, so they read as taller.
+        W0 = int(W * SPRITE_CANVAS_MULT)
+        H0 = int(H * SPRITE_CANVAS_MULT)
+        scale = (H * FACE_TARGET_FRAC) / face_h        # face → target px (same for all chars)
+        cx = (union[0] + union[2]) / 2.0               # figure center-x (base px)
+        off_x = int(round(W0 / 2.0 - cx * scale))      # center horizontally
+        off_y = int(round(H0 - union[3] * scale))      # union bottom (feet) on the baseline
+        sw, sh = max(1, int(round(W * scale))), max(1, int(round(H * scale)))
+        for p in paths:
+            with Image.open(p) as img:
+                resized = img.convert("RGBA").resize((sw, sh), Image.LANCZOS)
+            canvas = Image.new("RGBA", (W0, H0), (0, 0, 0, 0))
+            canvas.paste(resized, (off_x, off_y), resized)   # mask = alpha; clips overflow
+            canvas.save(p)
+        print(f"  [cast] Framed {len(paths)} sprites for {key} "
+              f"(face-normalized, scale={scale:.2f}, face={face_h:.0f}px → {W0}x{H0})")
+        return
+
+    # ── Fallback: crude alpha-crown + fixed-fraction crop (no usable mask) ──
     crown_y = max(0, union[1] - pad)
     crop_h = int(H * frac)
     bottom = min(H, crown_y + crop_h)
     left = max(0, union[0] - pad)
     right = min(W, union[2] + pad)
     box = (left, crown_y, right, bottom)
-
     for p in paths:
         with Image.open(p) as img:
             img.convert("RGBA").crop(box).save(p)
-    print(f"  [cast] Framed {len(paths)} sprites for {key} (waist-up) to {box}")
+    print(f"  [cast] Framed {len(paths)} sprites for {key} (alpha-crown crop) to {box}")
 
 
 # Back-compat alias: tools/recrop_sprites.py calls _autocrop_sprite_set.
@@ -991,14 +1048,14 @@ def generate_cast(preferences: Optional[dict] = None) -> list[CastMember]:
             print(f"[cast] ensure_llm before design failed ({e}); designing with heuristics")
         specs = build_custom_specs(preferences["custom_cast"])   # LLM designs
         if not specs:
-            specs = [(k, PRESET_CHARACTERS[k]) for k in ["yuki", "haruki", "sakura"]]
+            specs = [(k, PRESET_CHARACTERS[k]) for k in ["yuki", "marie", "sakura"]]
     else:
         if preferences and "preset" in preferences:
             char_keys = _get_preset_chars(preferences["preset"])
         elif preferences and "characters" in preferences:
             char_keys = preferences["characters"]
         else:
-            char_keys = ["yuki", "haruki", "sakura"]  # Default 3-character cast
+            char_keys = ["yuki", "marie", "sakura"]  # Default 3-character cast
         specs = [(k, PRESET_CHARACTERS[k]) for k in char_keys
                  if k in PRESET_CHARACTERS]
 
@@ -1225,11 +1282,11 @@ def _generate_one_via_comfy(key: str, preset: dict, base_path: str = None) -> Ca
 def _get_preset_chars(preset_name: str) -> list[str]:
     """Get character keys for a named cast preset."""
     presets = {
-        "childhood_friends": ["yuki", "haruki", "sakura"],
-        "love_triangle": ["yuki", "haruki", "ryo"],
-        "girls_night": ["yuki", "sakura"],
-        "full_cast": ["yuki", "haruki", "sakura", "ryo"],
-        "default": ["yuki", "haruki", "sakura"],
+        "childhood_friends": ["yuki", "marie", "sakura"],
+        "love_triangle": ["yuki", "marie", "ryo"],
+        "girls_night": ["yuki", "marie", "sakura"],  # was yuki+sakura; Marie joins the girls
+        "full_cast": ["yuki", "marie", "sakura", "ryo"],
+        "default": ["yuki", "marie", "sakura"],
     }
     return presets.get(preset_name, presets["default"])
 
@@ -1245,7 +1302,7 @@ def _make_placeholder_sprite(char_key: str, expr: str, member: CastMember) -> Op
         # Base color per character
         colors = {
             "yuki": (200, 210, 230),
-            "haruki": (180, 190, 200),
+            "marie": (235, 225, 180),
             "sakura": (230, 200, 210),
             "ryo": (190, 200, 220),
         }
