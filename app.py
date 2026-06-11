@@ -26,7 +26,6 @@ import os
 ON_SPACES = bool(os.getenv("SPACE_ID"))
 if ON_SPACES:
     os.environ.setdefault("ARS_FABULA_BACKEND", "transformers")
-    os.environ.setdefault("ARS_FABULA_MODEL", "google/gemma-3-4b-it")
 
 import gradio as gr
 

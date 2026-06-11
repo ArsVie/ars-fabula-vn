@@ -1,6 +1,7 @@
 torch
 transformers>=4.56
 accelerate
+bitsandbytes
 spaces
 requests
 pillow

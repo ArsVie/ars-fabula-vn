@@ -50,15 +50,13 @@ def make_callbacks(bg_provider: BackgroundProvider):
                  for n, c, t in ((n1, c1, t1), (n2, c2, t2), (n3, c3, t3))
                  if (n or "").strip()]
 
-        if cast_preset == "generated":
-            # Live sprite gen needs ComfyUI, which can't exist on HF Spaces /
-            # ZeroGPU (no external GPU servers) — use the curated cast there
-            # instead of walking the review flow with placeholder art.
-            from cast_pipeline import _comfy_health
-            if not _comfy_health():
-                print("[cast] ComfyUI unreachable — generated cast falls "
-                      "back to curated")
-                cast_preset = "curated"
+        if cast_preset == "generated" and os.getenv("SPACE_ID"):
+            # HF Spaces / ZeroGPU only: no ComfyUI server can exist there, so
+            # use the curated cast instead of walking the review flow with
+            # placeholder art. Local runs keep the normal generated flow
+            # (including its own ComfyUI-down handling) untouched.
+            print("[cast] Spaces runtime — generated cast falls back to curated")
+            cast_preset = "curated"
 
         if cast_preset == "generated":
             from cast_pipeline import (set_fast_generation, build_custom_specs,

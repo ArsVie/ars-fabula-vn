@@ -112,12 +112,18 @@ class LlamaServerClient(ModelClient):
 # torch + transformers are installed.
 
 # HF repo ids tried in order when ARS_FABULA_MODEL isn't itself a repo id.
-# Gemma is the project's model family but is license-gated — if the Space
-# token can't access it, fall through to an ungated small model rather
-# than dropping the whole demo to mock.
+# First choice is THE project model — Gemma 4 26B-A4B, the same one served
+# locally as a Q4_K_M GGUF. GGUF itself is a llama.cpp runtime format and
+# can't take the GPU on ZeroGPU (only in-process PyTorch can), so we load
+# Google's QAT checkpoint — weights trained to be quantized to 4-bit — and
+# quantize with bitsandbytes at load (~15GB, same precision class as the
+# local GGUF, fits the 48GB slice with room). Gemma repos are license-
+# gated — if the Space token can't access them, fall through to an ungated
+# small model rather than dropping the whole demo to mock.
 _HF_MODEL_CANDIDATES = [
-    "google/gemma-3-4b-it",
-    "Qwen/Qwen3-4B-Instruct-2507",
+    ("google/gemma-4-26B-A4B-it-qat-q4_0-unquantized", "4bit"),
+    ("google/gemma-3-4b-it", ""),
+    ("Qwen/Qwen3-4B-Instruct-2507", ""),
 ]
 
 _HF_STATE: dict = {"model": None, "tokenizer": None, "id": None}
@@ -141,13 +147,25 @@ def _hf_load(model_id: Optional[str] = None):
         print(f"[hf] transformers backend unavailable ({e})")
         return None
 
-    candidates = [model_id] if model_id and "/" in model_id else list(_HF_MODEL_CANDIDATES)
-    for mid in candidates:
+    if model_id and "/" in model_id:
+        candidates = [(model_id, os.getenv("ARS_FABULA_QUANT", "4bit"))]
+    else:
+        candidates = list(_HF_MODEL_CANDIDATES)
+    for mid, quant in candidates:
         try:
-            print(f"[hf] loading {mid}…")
+            print(f"[hf] loading {mid}" + (f" ({quant})" if quant else "") + "…")
             tok = AutoTokenizer.from_pretrained(mid)
-            model = AutoModelForCausalLM.from_pretrained(mid, dtype=torch.bfloat16)
-            if torch.cuda.is_available():
+            kwargs: dict = {"dtype": torch.bfloat16}
+            if quant == "4bit" and torch.cuda.is_available():
+                from transformers import BitsAndBytesConfig
+                kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_quant_type="nf4",
+                )
+                kwargs["device_map"] = "cuda"
+            model = AutoModelForCausalLM.from_pretrained(mid, **kwargs)
+            if "device_map" not in kwargs and torch.cuda.is_available():
                 model = model.to("cuda")
             model.eval()
             _HF_STATE.update(model=model, tokenizer=tok, id=mid)

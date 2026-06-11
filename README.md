@@ -10,7 +10,7 @@ pinned: false
 license: apache-2.0
 short_description: An AI-driven visual novel — a small LLM writes every scene
 models:
-  - google/gemma-3-4b-it
+  - google/gemma-4-26B-A4B-it-qat-q4_0-unquantized
 tags:
   - build-small-hackathon
 ---
@@ -36,7 +36,7 @@ small instruct model can speak. No fine-tune, no function-calling API.
 
 | Piece | On this Space (ZeroGPU) | At home |
 |---|---|---|
-| Scene writer | `google/gemma-3-4b-it` via transformers, `@spaces.GPU` | Gemma 4 26B-A4B MoE on a custom llama.cpp fork (MTP speculative decoding) on an 8 GB GPU |
+| Scene writer | Gemma 4 26B-A4B (QAT weights, 4-bit bitsandbytes) via transformers, `@spaces.GPU` | The same model as a Q4_K_M GGUF on a custom llama.cpp fork (MTP speculative decoding) on an 8 GB GPU |
 | Character sprites | Curated set (pre-baked with the pipeline below) | Live ComfyUI pipeline: face-gated base gen → expression warping → background removal |
 | Backgrounds | Preset library (same pipeline) | Preset + live txt2img for novel scene keys |
 
