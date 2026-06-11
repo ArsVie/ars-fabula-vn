@@ -51,12 +51,15 @@ def make_callbacks(bg_provider: BackgroundProvider):
                  if (n or "").strip()]
 
         if cast_preset == "generated" and os.getenv("SPACE_ID"):
-            # HF Spaces / ZeroGPU only: no ComfyUI server can exist there, so
-            # use the curated cast instead of walking the review flow with
-            # placeholder art. Local runs keep the normal generated flow
-            # (including its own ComfyUI-down handling) untouched.
-            print("[cast] Spaces runtime — generated cast falls back to curated")
-            cast_preset = "curated"
+            # HF Spaces: on the Docker Space ComfyUI runs in-container and the
+            # generated flow works normally; on ZeroGPU it can't exist. Probe
+            # rather than assume — but ONLY on Spaces: local runs keep the
+            # normal generated flow (with its own ComfyUI-down handling).
+            from cast_pipeline import _comfy_health
+            if not _comfy_health():
+                print("[cast] Spaces runtime without ComfyUI — generated cast "
+                      "falls back to curated")
+                cast_preset = "curated"
 
         if cast_preset == "generated":
             from cast_pipeline import (set_fast_generation, build_custom_specs,

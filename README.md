@@ -3,14 +3,15 @@ title: Ars Fabula VN
 emoji: 🌸
 colorFrom: pink
 colorTo: indigo
-sdk: gradio
-sdk_version: 6.16.0
-app_file: app.py
+sdk: docker
+app_port: 7860
+suggested_hardware: t4-medium
 pinned: false
 license: apache-2.0
 short_description: An AI-driven visual novel — a small LLM writes every scene
 models:
-  - google/gemma-4-26B-A4B-it-qat-q4_0-unquantized
+  - unsloth/gemma-4-26B-A4B-it-GGUF
+  - circlestone-labs/Anima
 tags:
   - build-small-hackathon
 ---
@@ -34,22 +35,26 @@ small instruct model can speak. No fine-tune, no function-calling API.
 
 ## What's running
 
-| Piece | On this Space (ZeroGPU) | At home |
-|---|---|---|
-| Scene writer | Gemma 4 26B-A4B (QAT weights, 4-bit bitsandbytes) via transformers, `@spaces.GPU` | The same model as a Q4_K_M GGUF on a custom llama.cpp fork (MTP speculative decoding) on an 8 GB GPU |
-| Character sprites | Curated set (pre-baked with the pipeline below) | Live ComfyUI pipeline: face-gated base gen → expression warping → background removal |
-| Backgrounds | Preset library (same pipeline) | Preset + live txt2img for novel scene keys |
+This Space runs the full home stack on a single T4 (16 GB):
+
+| Piece | How |
+|---|---|
+| Scene writer | **Gemma 4 26B-A4B** Q4_K_M GGUF on stock llama.cpp, with **MTP speculative decoding** (the multi-token-prediction head merged upstream June 2026), MoE experts on CPU (`--cpu-moe`), ~5.5 GB VRAM |
+| Character casting | Live **ComfyUI** pipeline: anima (Q5 GGUF UNET) base gen with a face-detector gate → per-expression FaceDetailer warping → background removal — design your own cast on the title screen |
+| Backgrounds | Preset library + live anima txt2img for scene keys the writer invents |
 
 The engine is model-independent: the same code drives a mock model (for
-tests), a llama.cpp server, or an in-process transformers model — picked
-by `ARS_FABULA_BACKEND`. On an 8 GB card the LLM and the diffusion stack
-can't co-reside, so the home setup stops/relaunches servers around image
-bakes; on ZeroGPU none of that is needed — the GPU is granted per call.
+tests), a llama.cpp server, or an in-process transformers model (the
+ZeroGPU variant) — picked by `ARS_FABULA_BACKEND`. On the dev machine's
+8 GB card the LLM and diffusion can't co-reside, so the app knows how to
+stop/relaunch servers around image bakes; on the T4 they fit together and
+that machinery idles as a fallback.
 
 ## Run it locally
 
 ```bash
 pip install -r requirements.txt gradio==6.16.0
-python app.py                          # in-process model: ARS_FABULA_BACKEND=transformers
-ARS_FABULA_BACKEND=mock python app.py  # no model needed
+bash tools/start_gemma_server_stock.sh &   # stock llama.cpp + MTP
+python app.py
+ARS_FABULA_BACKEND=mock python app.py      # no model needed
 ```
