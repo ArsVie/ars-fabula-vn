@@ -302,8 +302,29 @@ EXPRESSION_TAGS = {
     "embarrassed": "embarrassed, heavy blush, (@_@), spiral eyes, averted eyes, flying sweatdrops, nervous",
 }
 
+# Per-expression NEGATIVES, appended to the plain NEGATIVE for the
+# FaceDetailer pass. Each kills that expression's observed failure mode —
+# drifting back toward the base's calm face (laugh rendering as a mild
+# closed-mouth smile, sad as neutral-pleasant, surprised as calm) — without
+# constraining the rest of the set.
+EXPRESSION_NEGATIVE_TAGS = {
+    "laugh": "closed mouth, expressionless, neutral expression, frown, slight smile",
+    "sad": "smile, grin, laughing, happy, cheerful, expressionless",
+    "surprised": "smile, expressionless, calm, half-closed eyes, closed eyes, closed mouth",
+    "angry": "smile, happy, expressionless, calm",
+}
+
 # FaceDetailer strength — the sheet's note: 0.4–0.7, lower = subtler.
 EXPRESSION_DENOISE = 0.6
+# The big-delta expressions need a stronger inpaint to actually commit
+# (at 0.6 they often kept too much of the base's calm face — the source of
+# inconsistent laugh/sad/surprised sets); 0.7 is the top of the sheet's
+# recommended range, identity still held by the anchor + face-only mask.
+EXPRESSION_DENOISE_OVERRIDES = {
+    "laugh": 0.7,
+    "sad": 0.68,
+    "surprised": 0.7,
+}
 
 # Model files (must match the names installed in ComfyUI — taken verbatim
 # from the validated workflow).
@@ -786,6 +807,14 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
     anchor_part = f"{anchor}, " if anchor else ""
     expr_prompt = f"{QUALITY}, {STYLE_TAGS}. {anchor_part}{expr_tags}"
 
+    # Per-expression strength + negatives (see EXPRESSION_DENOISE_OVERRIDES /
+    # EXPRESSION_NEGATIVE_TAGS): big-delta expressions inpaint harder and
+    # negate their drift-back-to-calm failure mode.
+    denoise = EXPRESSION_DENOISE_OVERRIDES.get(expr_name, EXPRESSION_DENOISE)
+    expr_negative = NEGATIVE
+    if expr_name in EXPRESSION_NEGATIVE_TAGS:
+        expr_negative = f"{NEGATIVE}, {EXPRESSION_NEGATIVE_TAGS[expr_name]}"
+
     # FaceDetailer inputs — unified across all modes (see the module-level
     # comment above; only base resolution differs per mode).
     # Unified FaceDetailer params from the validated expression sheet.
@@ -798,7 +827,7 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
         "seed": seed, "steps": 15, "cfg": 4.0,
         "sampler_name": "euler", "scheduler": SCHEDULER,
         "positive": ["11", 0], "negative": ["12", 0],
-        "denoise": EXPRESSION_DENOISE, "feather": 15,
+        "denoise": denoise, "feather": 15,
         "noise_mask": True, "force_inpaint": True,
         "bbox_threshold": 0.5, "bbox_dilation": 25, "bbox_crop_factor": 2.0,
         "sam_detection_hint": "center-1", "sam_dilation": 0,
@@ -812,7 +841,7 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
     workflow = {
         "10": {"inputs": {"image": f"{character_key}_base.png"}, "class_type": "LoadImage"},
         "11": {"inputs": {"text": expr_prompt, "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
-        "12": {"inputs": {"text": NEGATIVE, "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
+        "12": {"inputs": {"text": expr_negative, "clip": ["45", 0]}, "class_type": "CLIPTextEncode"},
         "15": {"inputs": {"vae_name": VAE_NAME}, "class_type": "VAELoader"},
         "44": {"inputs": {"unet_name": UNET_NAME}, "class_type": "UnetLoaderGGUF"},
         "45": {"inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}, "class_type": "CLIPLoader"},

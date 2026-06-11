@@ -19,12 +19,75 @@ from typing import Optional
 
 import os
 
-from vn_contracts import SceneState, CastMember, Choice, ActionResult, AffectionFlag, SaveData
+from vn_contracts import (SceneState, CastMember, Choice, ActionResult,
+                          AffectionFlag, SaveData,
+                          member_to_dict, member_from_dict, cast_fingerprint)
 from vn_prompt import build_full_prompt, build_state_banner
 from model_client import ModelClient
 from trace_log import log_turn
 
 SAVE_DIR = os.path.join(os.path.dirname(__file__), "saves")
+CAST_DIR = os.path.join(SAVE_DIR, "cast")    # cast cards, keyed by fingerprint
+NUM_SLOTS = 5
+
+
+# ── Cast cards + slot metadata (module-level: usable without an engine) ──
+
+def save_cast_card(cast: dict[str, CastMember]) -> str:
+    """Persist the cast as a card under saves/cast/<hash>.json (idempotent —
+    the fingerprint covers identity, so an existing card is reused).
+    Returns the fingerprint."""
+    fp = cast_fingerprint(cast)
+    os.makedirs(CAST_DIR, exist_ok=True)
+    path = os.path.join(CAST_DIR, f"{fp}.json")
+    if not os.path.exists(path):
+        card = {"hash": fp,
+                "members": [member_to_dict(m) for m in cast.values()]}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(card, f, ensure_ascii=False, indent=2)
+    return fp
+
+
+def load_cast_card(cast_hash: str) -> Optional[dict[str, CastMember]]:
+    """Rebuild a cast dict from its card. None if the card doesn't exist."""
+    path = os.path.join(CAST_DIR, f"{cast_hash}.json")
+    if not (cast_hash and os.path.exists(path)):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        card = json.load(f)
+    members = [member_from_dict(d) for d in card.get("members", [])]
+    return {m.character.name: m for m in members} or None
+
+
+def read_save(slot: int, save_dir: Optional[str] = None) -> Optional[SaveData]:
+    """Read a slot's SaveData without an engine. None if the slot is empty
+    or unreadable."""
+    path = os.path.join(save_dir or SAVE_DIR, f"slot_{slot}.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return SaveData.from_dict(json.load(f))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def list_saves(save_dir: Optional[str] = None) -> list[dict]:
+    """Slot metadata for the save/load UIs — one entry per slot, in order.
+    Empty/unreadable slots get {"slot": i, "empty": True}."""
+    out = []
+    for i in range(NUM_SLOTS):
+        data = read_save(i, save_dir)
+        if data is None:
+            out.append({"slot": i, "empty": True})
+            continue
+        out.append({
+            "slot": i, "empty": False,
+            "name": data.save_name or "",
+            "chapter": data.chapter, "turn": data.turn,
+            "cast_names": list(data.cast_names),
+            "saved_at": data.saved_at or "",
+            "cast_hash": data.cast_hash or "",
+        })
+    return out
 
 # Expression -> voice emotion mapping (selective voicing of the emotional beat)
 _EXPRESSION_EMOTION = {
@@ -705,15 +768,24 @@ class VNEngine:
 
     # ── Save / Load ──────────────────────────────────────────────────
 
-    def save(self, slot: int = 0, save_dir: Optional[str] = None) -> str:
+    def save(self, slot: int = 0, save_dir: Optional[str] = None,
+             save_name: str = "", log_text: str = "") -> str:
         """Serialize the current scene to a JSON save slot.
 
+        Also writes the cast card (saves/cast/<hash>.json) and stamps the
+        save with its fingerprint, a player-given name, and the local time —
+        so the slot can be described in the UI and loaded from the main menu.
         Returns the path of the written save file.
         """
         save_dir = save_dir or SAVE_DIR
         os.makedirs(save_dir, exist_ok=True)
         path = os.path.join(save_dir, f"slot_{slot}.json")
         data = SaveData.from_scene(self.scene)
+        data.save_name = (save_name or "").strip()[:48]
+        from datetime import datetime
+        data.saved_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+        data.cast_hash = save_cast_card(self.scene.cast)
+        data.log_text = log_text or ""
         self.scene.save_slot = slot
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data.to_dict(), f, ensure_ascii=False, indent=2)

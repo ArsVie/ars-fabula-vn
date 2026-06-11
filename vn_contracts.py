@@ -58,6 +58,56 @@ def cast_to_dict(members: list["CastMember"]) -> dict[str, "CastMember"]:
     return {m.character.name: m for m in members}
 
 
+# ── Cast cards — serializable character snapshots keyed by hash ───────
+# A "cast card" is the full JSON form of a cast (identity + sprite paths),
+# written once per unique cast and referenced from saves by fingerprint, so
+# a save can be loaded from the main menu without an engine or a re-bake.
+
+def member_to_dict(member: "CastMember") -> dict:
+    c = member.character
+    return {
+        "name": c.name,
+        "identity_prompt": c.identity_prompt,
+        "seed": c.seed,
+        "personality": c.personality,
+        "voice_id": c.voice_id,
+        "role": c.role,
+        "expression_map": dict(member.expression_map),
+        "sprite_width": member.sprite_width,
+        "sprite_height": member.sprite_height,
+    }
+
+
+def member_from_dict(d: dict) -> "CastMember":
+    character = Character(
+        name=d["name"],
+        identity_prompt=d.get("identity_prompt", ""),
+        seed=d.get("seed", 0),
+        personality=d.get("personality", ""),
+        voice_id=d.get("voice_id", ""),
+        role=d.get("role", "student"),
+    )
+    return CastMember(
+        character=character,
+        expression_map=dict(d.get("expression_map", {})),
+        sprite_width=d.get("sprite_width", 512),
+        sprite_height=d.get("sprite_height", 768),
+    )
+
+
+def cast_fingerprint(cast: dict[str, "CastMember"]) -> str:
+    """Stable short hash of a cast's identity (name + prompt + seed per
+    member, order-independent). Saves reference their cast card by this."""
+    import hashlib
+    import json as _json
+    ident = sorted(
+        (m.character.name, m.character.identity_prompt, m.character.seed)
+        for m in cast.values()
+    )
+    blob = _json.dumps(ident, ensure_ascii=False)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
+
+
 # ── Scene state ──────────────────────────────────────────────────────
 
 @dataclass
@@ -161,6 +211,11 @@ class SaveData:
     expressions: dict[str, str] = field(default_factory=dict)
     choices_snapshot: list[dict] = field(default_factory=list)
     player_name: str = "Player"
+    # Slot metadata (shown in the save/load UIs)
+    save_name: str = ""              # player-given save title
+    saved_at: str = ""               # local "YYYY-MM-DD HH:MM"
+    cast_hash: str = ""              # fingerprint of the cast card this save uses
+    log_text: str = ""               # full-session scene log (turns + player answers)
 
     @classmethod
     def from_scene(cls, scene: SceneState) -> "SaveData":
@@ -194,7 +249,10 @@ class SaveData:
     def from_dict(cls, data: dict) -> "SaveData":
         data = dict(data)
         data["affection_snapshot"] = [tuple(t) for t in data.get("affection_snapshot", [])]
-        return cls(**data)
+        # Tolerate unknown keys so newer saves still open in older code.
+        from dataclasses import fields as _fields
+        allowed = {f.name for f in _fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in allowed})
 
     def apply_to(self, scene: SceneState) -> SceneState:
         """Restore this snapshot into an existing scene (cast is kept)."""

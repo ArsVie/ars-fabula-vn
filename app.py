@@ -33,7 +33,8 @@ def create_ui():
     bg_backend = os.getenv("ARS_FABULA_BG", "preset")
     bg_provider = get_background_provider(bg_backend)
     (on_start, on_choice, on_save, on_load, on_reset, on_advance,
-     on_free_submit, on_casting_confirm, on_casting_redo) = make_callbacks(bg_provider)
+     on_free_submit, on_casting_confirm, on_casting_redo,
+     on_menu_load) = make_callbacks(bg_provider)
 
     initial_scene = make_initial_scene()
 
@@ -120,6 +121,14 @@ def create_ui():
         reset_btn = gr.Button("Reset", visible="hidden", elem_id="reset-btn-hidden")
         save_status = gr.Markdown("", visible="hidden",
                                   elem_id="save-status-hidden")
+        # Save-name bridge (the in-panel name input writes here before Save) +
+        # the slot-rows mirror JS copies into the open panel after a save.
+        save_name_box = gr.Textbox(value="", visible="hidden", interactive=True,
+                                   elem_id="save-name-box")
+        slots_meta = gr.HTML("", visible="hidden", elem_id="slots-meta-hidden")
+        # Main-menu Load: clicked by the title-screen load list via JS.
+        menu_load_btn = gr.Button("Menu Load", visible="hidden",
+                                  elem_id="menu-load-btn")
 
         choice_input = gr.Textbox(visible="hidden", interactive=True,
                                   elem_id="choice-id-box")
@@ -174,7 +183,8 @@ def create_ui():
 
         submit_choice_btn.click(
             fn=on_choice,
-            inputs=[choice_input, choice_text_input, scene_state, engine_ref, prev_bg_state],
+            inputs=[choice_input, choice_text_input, scene_state, engine_ref,
+                    prev_bg_state, narration_log],
             outputs=turn_outputs,
             show_progress="hidden",
         )
@@ -189,12 +199,17 @@ def create_ui():
             show_progress="hidden",
         )
 
-        save_btn.click(fn=on_save, inputs=[save_slot, scene_state, engine_ref],
-                       outputs=[save_status], show_progress="hidden")
+        save_btn.click(fn=on_save,
+                       inputs=[save_slot, save_name_box, narration_log,
+                               scene_state, engine_ref],
+                       outputs=[save_status, slots_meta], show_progress="hidden")
         load_btn.click(fn=on_load,
                        inputs=[save_slot, scene_state, engine_ref, prev_bg_state],
                        outputs=turn_outputs + [save_status],
                        show_progress="hidden")
+        menu_load_btn.click(fn=on_menu_load, inputs=[save_slot],
+                            outputs=turn_outputs + [save_status],
+                            show_progress="hidden")
 
         reset_btn.click(fn=on_reset, outputs=turn_outputs, show_progress="hidden")
 
@@ -221,7 +236,8 @@ def create_ui():
         free_outputs = turn_outputs + [free_input]
         free_submit.click(
             fn=on_free_submit,
-            inputs=[free_input, scene_state, engine_ref, prev_bg_state],
+            inputs=[free_input, scene_state, engine_ref, prev_bg_state,
+                    narration_log],
             outputs=free_outputs,
             show_progress="hidden",
         )

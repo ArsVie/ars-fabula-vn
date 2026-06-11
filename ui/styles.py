@@ -67,7 +67,12 @@ body { background: var(--bg-void) !important; }
    content inside the canvas. JS toggles body.cast-setup-active.
    NOTE: The doubled `.vn-title-content.vn-title-content` selector beats Gradio 6's
    scoped-prefix specificity issue (same reason #cast-setup#cast-setup was needed). */
-body.cast-setup-active .vn-title-content { display: none; }
+/* !important is required: Gradio 6 re-emits every custom rule with a
+   `.gradio-container-... .contain` scope prefix. The scoped copy of the
+   base `.vn-title-content { display:flex }` outranks this rule, while the
+   scoped copy of THIS rule can never match (body is outside .contain) —
+   so without !important the title stayed visible beside the cast setup. */
+body.cast-setup-active .vn-title-content { display: none !important; }
 body.cast-setup-active .vn-cast-setup {
   display: flex !important;
 }
@@ -87,6 +92,9 @@ body.cast-setup-active .vn-cast-setup {
   border-radius: 6px;
   overflow: hidden;
   margin-bottom: 8px;
+  container-type: inline-size;      /* lets dialogue/choice text size in cqw —
+                                       i.e. scale with the screen (and thus the
+                                       text box), not the page root font */
 }
 
 /* Background layers */
@@ -131,13 +139,22 @@ body.cast-setup-active .vn-cast-setup {
   /* No per-render entrance animation: the canvas HTML is rebuilt every beat,
      so an entrance keyframe replayed (and "dragged") on each advance. The
      active/inactive filter still animates below. */
-  transition: filter 0.35s ease, opacity 0.35s ease;
+  transition: filter 0.35s ease;
 }
-/* Active/inactive: the speaker is bright, the rest gently shadowed. */
-.vn-sprite.active   { filter: none; opacity: 1; }
+/* Active/inactive: the speaker is bright, the rest gently shadowed.
+   Dimming is FILTER-only — sprites are never made translucent. */
+.vn-sprite.active   { filter: none; }
 .vn-sprite.inactive {
   filter: brightness(0.6) saturate(0.85) contrast(0.95);
-  opacity: 0.9;
+}
+/* Choice state: once the line finishes typing and the choice cluster fades in,
+   EVERY sprite (active speaker included) takes the inactive dimming, so the
+   semi-transparent capsules and the free-text bar read cleanly over bright
+   costumes. Same gate as .vn-choices visibility; the existing 0.35s
+   filter transition makes it fade in with the capsules. */
+.vn-screen[data-choices="1"][data-typing="0"] .vn-sprite,
+.vn-screen[data-choices="1"][data-typing="0"] .vn-sprite.active {
+  filter: brightness(0.6) saturate(0.85) contrast(0.95);
 }
 @keyframes vnSpriteIn {
   from { opacity: 0.2; transform: translateY(10px) scale(0.97); }
@@ -148,8 +165,10 @@ body.cast-setup-active .vn-cast-setup {
    grows or shrinks with the line length — one flat scrim, not a gradient) */
 .vn-dialogue {
   position: absolute;
-  bottom: 20px; left: 6%; right: 6%;   /* ~88% width, centered */
-  height: 180px;                        /* fixed — independent of text lines */
+  bottom: 20px; left: 20%; right: 20%; /* 60% width, centered */
+  height: clamp(130px, 13.5cqw, 230px); /* scales with the screen width (never
+                                           with line length) so it stays in
+                                           proportion to the cqw-sized text */
   background: var(--dialogue-bg);       /* shared panel colour */
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
@@ -159,15 +178,16 @@ body.cast-setup-active .vn-cast-setup {
 .vn-dialogue.has-speaker {
   border-left: 3px solid var(--border-accent);
 }
-/* 4:3 centered column — constrains dialogue text to a readable column */
+/* Centered column — the box itself is already narrow (60% of the screen),
+   so the text uses most of it. */
 .vn-dialogue-inner {
-  max-width: min(75%, 960px);
+  max-width: min(94%, 960px);
   margin: 0 auto;
 }
 .vn-name-plate {
   display: inline-block;
   font-family: var(--font-display);
-  font-size: 0.9rem;
+  font-size: clamp(0.7rem, 1.1cqw, 1.2rem);
   letter-spacing: 0.08em;
   color: var(--text-accent);
   background: rgba(232,168,124,0.1);
@@ -180,7 +200,7 @@ body.cast-setup-active .vn-cast-setup {
   font-family: var(--font-display);
   font-weight: 600;
   color: var(--text-accent);
-  font-size: 1rem;
+  font-size: clamp(0.75rem, 1.2cqw, 1.3rem);
   margin-bottom: 6px;
   letter-spacing: 0.06em;
 }
@@ -188,7 +208,9 @@ body.cast-setup-active .vn-cast-setup {
 .vn-text {
   font-family: var(--font-character);
   color: var(--text-primary);
-  font-size: 1.15rem;
+  /* Scales with the screen/text-box width: ≈ the old 1.15rem on a ~1300px
+     frame, smaller on regular resolutions, larger on big frames. */
+  font-size: clamp(0.85rem, 1.4cqw, 1.5rem);
   line-height: 1.7;
   text-align: left;
   padding: 0 16px;
@@ -254,8 +276,8 @@ body.cast-setup-active .vn-cast-setup {
   color: var(--text-primary) !important;
   font-family: var(--font-character) !important;     /* MS Gothic */
   font-style: normal !important;
-  font-size: 1rem !important;
-  padding: 0.75rem 2rem !important;
+  font-size: clamp(0.8rem, 1.25cqw, 1.35rem) !important;
+  padding: 0.75em 2em !important;          /* tracks the scaled font */
   width: auto !important;                            /* size to content, not full width */
   text-align: center !important;
   cursor: pointer !important;
@@ -293,8 +315,8 @@ body.cast-setup-active .vn-cast-setup {
   box-shadow: none !important;
   color: var(--text-primary);
   font-family: var(--font-character);
-  font-size: 1rem;
-  padding: 0.7rem 0.5rem 0.7rem 1.5rem;
+  font-size: clamp(0.8rem, 1.25cqw, 1.35rem);
+  padding: 0.7em 0.5em 0.7em 1.5em;        /* tracks the scaled font */
 }
 .vn-free-text::placeholder { color: var(--text-muted); font-style: italic; }
 .vn-free-go {
@@ -302,9 +324,9 @@ body.cast-setup-active .vn-cast-setup {
   background: transparent;
   border: none;
   color: var(--text-accent);
-  font-size: 1.05rem;
+  font-size: clamp(0.85rem, 1.3cqw, 1.4rem);
   cursor: pointer;
-  padding: 0 1.1rem;
+  padding: 0 1.1em;
 }
 .vn-free-go:hover { color: #fff; }
 
@@ -418,8 +440,30 @@ body.cast-setup-active .vn-cast-setup {
 .review-name {
   font-family: var(--font-display);
   color: var(--text-accent);
-  font-size: 1.15rem;
+  font-size: clamp(1.15rem, 1.5cqw, 1.6rem);
   letter-spacing: 0.06em;
+}
+/* Designed character description — role badge + personality paragraph */
+.review-desc { display: flex; flex-direction: column; gap: 6px; }
+.review-role {
+  align-self: flex-start;
+  font-family: var(--font-ui);
+  font-size: clamp(0.66rem, 0.85cqw, 0.92rem);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-accent);
+  background: rgba(232,168,124,0.1);
+  border: 1px solid var(--border-accent);
+  border-radius: 3px;
+  padding: 2px 10px;
+}
+.review-personality {
+  font-family: var(--font-dialogue);
+  font-style: italic;
+  font-size: clamp(0.82rem, 1.05cqw, 1.15rem);
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin: 0;
 }
 .review-prompt-label {
   font-family: var(--font-ui);
@@ -492,7 +536,7 @@ body.cast-setup-active .vn-cast-setup {
   color: var(--text-muted);
   font-family: var(--font-dialogue);
   font-style: italic;
-  font-size: 0.88rem;
+  font-size: clamp(0.88rem, 1.1cqw, 1.2rem);
 }
 
 /* ── Cast Cards (sidebar) ── */
@@ -698,7 +742,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   border: 1px solid var(--border-mid) !important;
   color: var(--text-secondary) !important;
   font-family: var(--font-ui) !important;
-  font-size: 0.58rem !important;
+  font-size: clamp(0.6rem, 0.75cqw, 0.85rem) !important;
   letter-spacing: 0.1em !important;
   text-transform: uppercase !important;
   padding: 2px 8px !important;
@@ -728,7 +772,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 }
 .vn-panel-title {
   font-family: var(--font-display);
-  font-size: 0.72rem;
+  font-size: clamp(0.75rem, 0.95cqw, 1.05rem);
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--text-accent);
@@ -742,7 +786,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   background: transparent !important;
   border: none !important;
   color: var(--text-muted) !important;
-  font-size: 0.9rem !important;
+  font-size: clamp(0.9rem, 1.15cqw, 1.3rem) !important;
   cursor: pointer !important;
   padding: 2px 6px !important;
 }
@@ -774,10 +818,15 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 .vn-log-text {
   font-family: var(--font-dialogue);
   font-style: italic;
-  font-size: 0.95rem;
+  font-size: clamp(0.85rem, 1.25cqw, 1.35rem);
   line-height: 1.7;
   color: var(--text-narrator);
   white-space: pre-wrap;
+}
+/* Player answers inside the session register (▸-prefixed lines) */
+.vn-log-answer {
+  font-style: normal;
+  color: var(--text-accent);
 }
 
 /* Cast panel — slides in from the right */
@@ -799,16 +848,16 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 }
 .cast-panel-card {
   display: flex;
-  gap: 10px;
+  gap: 14px;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-left: 3px solid var(--border-accent);
   border-radius: 5px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
 }
 .cast-panel-thumb {
-  width: 56px; height: 80px;
+  width: clamp(78px, 8cqw, 130px); height: clamp(112px, 11.5cqw, 188px);
   object-fit: cover; object-position: top;
   border-radius: 3px;
   flex-shrink: 0;
@@ -816,22 +865,22 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 }
 .cast-panel-name {
   font-family: var(--font-display);
-  font-size: 0.85rem;
+  font-size: clamp(1rem, 1.3cqw, 1.45rem);
   color: var(--text-accent);
   letter-spacing: 0.06em;
 }
 .cast-panel-role {
-  font-size: 0.7rem;
+  font-size: clamp(0.76rem, 1cqw, 1.1rem);
   color: var(--text-muted);
-  margin-top: 1px;
+  margin-top: 2px;
 }
 .cast-panel-personality {
   font-family: var(--font-dialogue);
   font-style: italic;
-  font-size: 0.78rem;
+  font-size: clamp(0.85rem, 1.1cqw, 1.2rem);
   color: var(--text-secondary);
-  margin-top: 4px;
-  line-height: 1.35;
+  margin-top: 6px;
+  line-height: 1.45;
 }
 
 /* Save panel — centered modal */
@@ -842,7 +891,9 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   visibility: hidden;            /* unpaintable when closed — see log panel note */
   pointer-events: none;
   transition: opacity 0.2s, transform 0.2s, visibility 0s linear 0.2s;
-  width: 340px;
+  width: clamp(380px, 34cqw, 560px);
+  max-height: 86%;
+  overflow-y: auto;
   border: 1px solid var(--border-mid);
   border-radius: 6px;
   padding: 22px 24px;
@@ -855,24 +906,84 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   pointer-events: auto;
   transition: opacity 0.2s, transform 0.2s, visibility 0s;
 }
-.vn-slot-row { display: flex; gap: 8px; margin-bottom: 14px; }
+/* Rich slot rows — one full-width card per slot: name, chapter · turn,
+   cast names, timestamp. Shared by the save panel and the menu load list. */
+.vn-slot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+  width: 100%;
+}
 .vn-slot-btn {
-  flex: 1;
+  display: grid !important;
+  grid-template-columns: 1fr auto;
+  row-gap: 2px;
+  width: 100% !important;
   background: var(--bg-surface) !important;
   border: 1px solid var(--border-mid) !important;
-  color: var(--text-secondary) !important;
-  font-family: var(--font-display) !important;
-  font-size: 0.8rem !important;
-  padding: 7px 0 !important;
-  border-radius: 3px !important;
+  border-radius: 4px !important;
+  padding: 8px 12px !important;
   cursor: pointer !important;
-  text-align: center !important;
+  text-align: left !important;
+  transition: border-color 0.15s, background 0.15s !important;
+}
+.vn-slot-btn:hover {
+  border-color: var(--border-accent) !important;
 }
 .vn-slot-btn.active {
   border-color: var(--border-accent) !important;
-  color: var(--text-accent) !important;
   background: rgba(232,168,124,0.1) !important;
 }
+.vn-slot-btn.empty .vn-slot-name { color: var(--text-muted); font-style: italic; }
+.vn-slot-btn.disabled { opacity: 0.45 !important; cursor: default !important; }
+.vn-slot-name {
+  font-family: var(--font-display);
+  font-size: clamp(0.82rem, 1.05cqw, 1.15rem);
+  color: var(--text-accent);
+  letter-spacing: 0.05em;
+  grid-column: 1;
+}
+.vn-slot-time {
+  font-family: var(--font-ui);
+  font-size: clamp(0.66rem, 0.85cqw, 0.92rem);
+  color: var(--text-muted);
+  grid-column: 2; grid-row: 1;
+  align-self: center;
+}
+.vn-slot-meta {
+  font-family: var(--font-ui);
+  font-size: clamp(0.7rem, 0.9cqw, 1rem);
+  color: var(--text-secondary);
+  grid-column: 1 / -1;
+}
+.vn-slot-cast {
+  font-family: var(--font-dialogue);
+  font-style: italic;
+  font-size: clamp(0.7rem, 0.9cqw, 1rem);
+  color: var(--text-muted);
+  grid-column: 1 / -1;
+}
+/* Save-name input — sits between the slots and the Save/Load actions. */
+.vn-save-name {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border-mid);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: clamp(0.78rem, 1cqw, 1.1rem);
+  padding: 7px 10px;
+  margin-bottom: 10px;
+  transition: border-color 0.15s;
+}
+.vn-save-name:focus {
+  border-color: var(--border-accent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--border-glow);
+}
+.vn-save-name::placeholder { color: var(--text-muted); font-style: italic; }
 .vn-save-actions { display: flex; gap: 10px; }
 .vn-save-action {
   flex: 1;
@@ -880,7 +991,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   border: 1px solid var(--border-mid) !important;
   color: var(--text-secondary) !important;
   font-family: var(--font-display) !important;
-  font-size: 0.72rem !important;
+  font-size: clamp(0.72rem, 0.95cqw, 1rem) !important;
   letter-spacing: 0.12em !important;
   text-transform: uppercase !important;
   padding: 9px 0 !important;
@@ -893,7 +1004,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 }
 .vn-save-status {
   margin-top: 12px;
-  font-size: 0.74rem;
+  font-size: clamp(0.74rem, 0.95cqw, 1rem);
   color: var(--text-muted);
   font-style: italic;
   min-height: 1.1em;
@@ -953,6 +1064,71 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   transition: box-shadow 0.2s !important;
 }
 .vn-title-begin:hover { box-shadow: 0 0 22px var(--border-glow) !important; }
+.vn-title-actions { display: flex; gap: 14px; align-items: center; }
+.vn-title-load {
+  font-family: var(--font-display) !important;
+  font-size: 0.9rem !important;
+  letter-spacing: 0.22em !important;
+  text-transform: uppercase !important;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-mid) !important;
+  color: var(--text-secondary) !important;
+  padding: 12px 36px !important;
+  border-radius: 3px !important;
+  cursor: pointer !important;
+  transition: color 0.15s, border-color 0.15s !important;
+}
+.vn-title-load:hover {
+  color: var(--text-accent) !important;
+  border-color: var(--border-accent) !important;
+}
+.vn-title-load.disabled {
+  opacity: 0.35 !important;
+  cursor: default !important;
+}
+
+/* ── Main-menu Load list — a third title-screen section, like cast setup.
+   Toggled by body.menu-load-active; !important beats Gradio 6's scoped
+   re-emission of the base rules (see the cast-setup note above). ── */
+.vn-menu-load { display: none; }
+body.menu-load-active .vn-title-content { display: none !important; }
+body.menu-load-active .vn-cast-setup { display: none !important; }
+body.menu-load-active .vn-menu-load {
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  height: 100%;
+  padding: 28px 36px;
+  overflow-y: auto;
+  gap: 16px;
+  background: linear-gradient(160deg, #0d0d1a 0%, #16162e 60%, #0a0a20 100%);
+}
+.vn-ml-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.3rem, 2cqw, 2.1rem);
+  letter-spacing: 0.28em;
+  color: var(--text-accent);
+  text-shadow: 0 0 30px rgba(232,168,124,0.2);
+}
+.vn-ml-list { width: 100%; max-width: min(620px, 80%); }
+.vn-ml-back {
+  font-family: var(--font-display) !important;
+  font-size: clamp(0.82rem, 1.05cqw, 1.15rem) !important;
+  letter-spacing: 0.18em !important;
+  text-transform: uppercase !important;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-mid) !important;
+  color: var(--text-secondary) !important;
+  padding: 10px 32px !important;
+  border-radius: 3px !important;
+  cursor: pointer !important;
+}
+.vn-ml-back:hover {
+  color: var(--text-accent) !important;
+  border-color: var(--border-accent) !important;
+}
 
 /* ── Title screen — player name input ── */
 .vn-title-name-row { margin-top: 8px; }
@@ -989,10 +1165,10 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   gap: 14px;
   background: linear-gradient(160deg, #0d0d1a 0%, #16162e 60%, #0a0a20 100%);
 }
-.vn-cs-header { text-align: center; max-width: 680px; }
+.vn-cs-header { text-align: center; max-width: min(820px, 78%); }
 .vn-cs-title {
   font-family: var(--font-display);
-  font-size: 1.3rem;
+  font-size: clamp(1.3rem, 2cqw, 2.1rem);
   letter-spacing: 0.28em;
   color: var(--text-accent);
   text-shadow: 0 0 30px rgba(232,168,124,0.2);
@@ -1000,7 +1176,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 }
 .vn-cs-desc {
   font-family: var(--font-dialogue);
-  font-size: 0.78rem;
+  font-size: clamp(0.85rem, 1.15cqw, 1.25rem);
   line-height: 1.65;
   color: var(--text-secondary);
   text-align: left;
@@ -1012,14 +1188,14 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   color: var(--text-accent);
   padding: 0 4px;
   border-radius: 2px;
-  font-size: 0.72rem;
+  font-size: 0.92em;          /* tracks the scaled description text */
 }
 .vn-cs-cards {
   display: flex;
   flex-direction: column;
   gap: 10px;
   width: 100%;
-  max-width: 720px;
+  max-width: min(860px, 80%);
 }
 .vn-cs-card {
   background: var(--bg-surface);
@@ -1042,7 +1218,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 }
 .vn-cs-field label {
   font-family: var(--font-ui);
-  font-size: 0.62rem;
+  font-size: clamp(0.68rem, 0.85cqw, 0.95rem);
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -1053,7 +1229,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   border-radius: 3px;
   color: var(--text-primary);
   font-family: var(--font-ui);
-  font-size: 0.82rem;
+  font-size: clamp(0.88rem, 1.15cqw, 1.25rem);
   padding: 7px 10px;
   transition: border-color 0.15s;
   width: 100%;
@@ -1064,18 +1240,18 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   outline: none;
   box-shadow: 0 0 0 2px var(--border-glow);
 }
-.vn-cs-input::placeholder { color: var(--text-muted); font-style: italic; font-size: 0.75rem; }
+.vn-cs-input::placeholder { color: var(--text-muted); font-style: italic; font-size: 0.9em; }
 .vn-cs-tags-row { width: 100%; }
 .vn-cs-tags-input {
   font-family: monospace;
-  font-size: 0.78rem;
+  font-size: clamp(0.8rem, 1.05cqw, 1.15rem);
 }
 .vn-cs-fast {
   display: flex;
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  max-width: 720px;
+  max-width: min(860px, 80%);
   width: 100%;
   padding: 6px 0;
 }
@@ -1087,7 +1263,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 }
 .vn-cs-fast span {
   font-family: var(--font-ui);
-  font-size: 0.72rem;
+  font-size: clamp(0.78rem, 1cqw, 1.05rem);
   color: var(--text-muted);
   letter-spacing: 0.04em;
 }
@@ -1096,12 +1272,12 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   gap: 14px;
   justify-content: center;
   width: 100%;
-  max-width: 720px;
+  max-width: min(860px, 80%);
   padding-top: 6px;
 }
 .vn-cs-btn {
   font-family: var(--font-display) !important;
-  font-size: 0.8rem !important;
+  font-size: clamp(0.82rem, 1.05cqw, 1.15rem) !important;
   letter-spacing: 0.18em !important;
   text-transform: uppercase !important;
   padding: 10px 32px !important;
@@ -1346,8 +1522,15 @@ const _typewriterObserver = new MutationObserver(function() {
         // Small delay so the DOM settles
         setTimeout(function() { startTypewriter(screen); }, 50);
     }
+    // A title-screen render also ends any pending wait (e.g. a menu load
+    // that failed back to the title — it has no data-typing attribute).
+    if (screen && screen.classList.contains('vn-title-screen')
+        && document.body.classList.contains('vn-waiting')) {
+        setWaiting(false);
+    }
     restoreUiState();
     syncSaveStatus();
+    syncSlotRows();
     syncStage();
 });
 
@@ -1534,6 +1717,10 @@ function restoreUiState() {
     screen.querySelectorAll('.vn-panel').forEach(function(p) {
         const isOpen = window._vnUi.panel && p.classList.contains(window._vnUi.panel);
         p.classList.toggle('open', !!isOpen);
+        // The log is a full-session register — land on the newest entry.
+        if (isOpen && p.classList.contains('vn-panel-log')) {
+            p.scrollTop = p.scrollHeight;
+        }
     });
     // Re-mark the active slot pill
     screen.querySelectorAll('.vn-slot-btn').forEach(function(s) {
@@ -1549,6 +1736,26 @@ function syncSaveStatus() {
     // Write-only-if-different: setting textContent mutates childList and
     // would re-trigger the observer in a loop otherwise.
     if (dst.textContent !== text) { dst.textContent = text; }
+}
+
+// Mirror the hidden slot-rows HTML (refreshed by on_save) into the open
+// save panel, so slot descriptions update right after a save without a
+// full canvas re-render. The applied string is remembered as a JS property
+// (dst._mirrorHtml) — NOT compared against live innerHTML, which diverges
+// as soon as restoreUiState marks a row .active and would loop the
+// observer (assign → mutate → fire → assign…), freezing the page.
+function syncSlotRows() {
+    const src = document.querySelector('#slots-meta-hidden');
+    const dst = document.querySelector('.vn-panel-save .vn-slot-list');
+    if (!src || !dst) return;
+    const firstBtn = src.querySelector('.vn-slot-btn');
+    if (!firstBtn) return;          // mirror not populated yet
+    const html = firstBtn.parentElement.innerHTML;
+    if (dst._mirrorHtml !== html) {
+        dst._mirrorHtml = html;
+        dst.innerHTML = html;
+        restoreUiState();           // re-mark the active slot row
+    }
 }
 
 function togglePanel(panelClass) {
@@ -1659,7 +1866,33 @@ document.addEventListener('click', function(e) {
         return;
     }
 
-    // ── Save panel: slot pills + actions ─────────────────────
+    // ── Main-menu Load list ──────────────────────────────────
+    const mlOpen = e.target.closest('.vn-title-load');
+    if (mlOpen) {
+        e.preventDefault();
+        if (!mlOpen.classList.contains('disabled')) {
+            document.body.classList.add('menu-load-active');
+        }
+        return;
+    }
+    if (e.target.closest('.vn-ml-back')) {
+        e.preventDefault();
+        document.body.classList.remove('menu-load-active');
+        return;
+    }
+    const mlSlot = e.target.closest('.vn-menu-load .vn-slot-btn');
+    if (mlSlot) {
+        e.preventDefault();
+        if (mlSlot.getAttribute('data-empty') === '1') return;
+        window._vnUi.slot = mlSlot.getAttribute('data-slot') || '0';
+        setHiddenVal('#save-slot-hidden', window._vnUi.slot);
+        document.body.classList.remove('menu-load-active');
+        setWaiting(true);
+        setTimeout(function() { clickHidden('#menu-load-btn'); }, 150);
+        return;
+    }
+
+    // ── Save panel: slot rows + actions ─────────────────────
     const slot = e.target.closest('.vn-slot-btn');
     if (slot) {
         e.preventDefault();
@@ -1672,6 +1905,11 @@ document.addEventListener('click', function(e) {
     if (action) {
         e.preventDefault();
         const which = action.getAttribute('data-which');
+        if (which === 'save') {
+            // Bridge the in-panel save-name input to the hidden Gradio box
+            const nameEl = document.querySelector('.vn-save-name');
+            setHiddenVal('#save-name-box', nameEl ? nameEl.value.trim() : '');
+        }
         clickHidden(which === 'save' ? '#save-btn-hidden' : '#load-btn-hidden');
         return;
     }

@@ -10,10 +10,12 @@ import gradio as gr
 from vn_contracts import SceneState, CastMember
 from providers import BackgroundProvider
 from cast_pipeline import load_curated_cast
+from vn_engine import read_save, load_cast_card
 
 from .bootstrap import make_initial_scene, build_engine
 from .screens import (_title_screen_html, _cast_panel_html,
-                      _casting_screen_html, _review_screen_html)
+                      _casting_screen_html, _review_screen_html,
+                      _slot_rows_html)
 from .beats import clean_narration, _segment_beats, _render_beats_screen
 
 
@@ -271,8 +273,21 @@ def make_callbacks(bg_provider: BackgroundProvider):
         # Clear the prompt box so it shows the new prompt on next load
         return (screen, info, casting_state, preset["identity_prompt"])
 
+    def _append_log(prev_log: str, player_name: str, player_text: str,
+                    narration: str) -> str:
+        """Grow the session register: previous turns, then the player's
+        answer (marked with ▸), then the new turn's narration."""
+        parts = []
+        if (prev_log or "").strip():
+            parts.append(prev_log.rstrip())
+        if (player_text or "").strip():
+            parts.append(f"▸ {player_name}: {player_text.strip()}")
+        if (narration or "").strip():
+            parts.append(narration.strip())
+        return "\n\n".join(parts)
+
     def on_choice(choice_id: str, choice_text: str,
-                  scene: SceneState, engine, prev_bg: str):
+                  scene: SceneState, engine, prev_bg: str, prev_log: str = ""):
         """A choice click → THE SCENE TURN."""
         if not engine or not scene or not choice_id:
             return _empty(scene)
@@ -290,7 +305,10 @@ def make_callbacks(bg_provider: BackgroundProvider):
         beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg,
                                init_present=pre_present, voice_line=engine.last_voice)
 
-        log = clean_narration(raw)
+        # The Scene Log is a full-session register: every turn's narration
+        # plus the player's answer that triggered it.
+        log = _append_log(prev_log, scene.player_name,
+                          choice_text or "", clean_narration(raw))
         screen, new_prev_bg, voice_path = _render_beats_screen(
             beats, 0, scene, bg_provider, prev_bg, log_text=log)
 
@@ -299,11 +317,37 @@ def make_callbacks(bg_provider: BackgroundProvider):
                 f"Turn {scene.turn} · {scene.background} ({scene.mood})",
                 voice_path, new_prev_bg, beats, 0)
 
-    def on_save(slot: float, scene: SceneState, engine):
+    def on_save(slot: float, save_name: str, log_text: str,
+                scene: SceneState, engine):
+        """Save into a slot with an optional player-given name (the session
+        log goes along). Also returns fresh slot rows for the hidden mirror,
+        so the open save panel's slot descriptions update without a full
+        screen re-render."""
         if not engine:
-            return "Nothing to save — start a story first."
-        engine.save(int(slot))
-        return f"Saved · slot {int(slot)}"
+            return "Nothing to save — start a story first.", gr.skip()
+        engine.save(int(slot), save_name=save_name or "", log_text=log_text or "")
+        return f"Saved · slot {int(slot) + 1}", _slot_rows_html()
+
+    def _loaded_view(scene: SceneState, engine, slot: int, prev_bg: str,
+                     log_text: str = ""):
+        """The 12-tuple shown after a successful load (panel or main menu).
+
+        A restored save has no per-beat tool sequence — show it as a single
+        static beat (the saved description) with its choices already visible.
+        The session register resumes from the save's log_text.
+        """
+        log = log_text or scene.description or ""
+        beats = [{"speaker": "", "text": scene.description or "",
+                  "expressions": dict(scene.expressions),
+                  "background": scene.background,
+                  "present": list(scene.present), "voice": None}]
+        screen, new_prev_bg, _ = _render_beats_screen(
+            beats, 0, scene, bg_provider, prev_bg, log_text=log)
+        return (scene, engine, screen, scene.cast, _cast_panel_html(scene.cast),
+                log,
+                f"Loaded · slot {slot + 1} · Turn {scene.turn} · {scene.background} ({scene.mood})",
+                None, new_prev_bg, beats, 0,
+                f"Loaded · slot {slot + 1}")
 
     def on_load(slot: float, scene: SceneState, engine, prev_bg: str):
         if not engine:
@@ -313,22 +357,29 @@ def make_callbacks(bg_provider: BackgroundProvider):
         except FileNotFoundError:
             return (scene, engine, gr.skip(), scene.cast,
                     _cast_panel_html(scene.cast), gr.skip(),
-                    f"Slot {int(slot)} is empty.", None, prev_bg, gr.skip(), gr.skip(),
-                    f"Slot {int(slot)} is empty.")
+                    f"Slot {int(slot) + 1} is empty.", None, prev_bg, gr.skip(), gr.skip(),
+                    f"Slot {int(slot) + 1} is empty.")
+        data = read_save(int(slot))
+        return _loaded_view(scene, engine, int(slot), prev_bg,
+                            log_text=(data.log_text if data else ""))
 
-        # A restored save has no per-beat tool sequence — show it as a single
-        # static beat (the saved description) with its choices already visible.
-        beats = [{"speaker": "", "text": scene.description or "",
-                  "expressions": dict(scene.expressions),
-                  "background": scene.background,
-                  "present": list(scene.present), "voice": None}]
-        screen, new_prev_bg, _ = _render_beats_screen(
-            beats, 0, scene, bg_provider, prev_bg, log_text=scene.description or "")
-        return (scene, engine, screen, scene.cast, _cast_panel_html(scene.cast),
-                scene.description,
-                f"Loaded · slot {int(slot)} · Turn {scene.turn} · {scene.background} ({scene.mood})",
-                None, new_prev_bg, beats, 0,
-                f"Loaded · slot {int(slot)}")
+    def on_menu_load(slot: float):
+        """Load a save from the MAIN MENU — no engine exists yet, so the cast
+        is rebuilt from the save's cast card (saves/cast/<hash>.json) and a
+        fresh engine is constructed around it before the snapshot applies."""
+        slot = int(slot)
+        data = read_save(slot)
+        if data is None:
+            return (*_empty(), f"Slot {slot + 1} is empty.")
+        cast = load_cast_card(data.cast_hash)
+        if not cast:
+            return (*_empty(),
+                    f"Slot {slot + 1}: its cast card is missing — "
+                    "this save predates cast cards or the card was deleted.")
+        scene = SceneState(cast=cast, player_name=data.player_name)
+        engine, _status = build_engine(cast, scene)
+        scene = engine.load(slot)
+        return _loaded_view(scene, engine, slot, "", log_text=data.log_text)
 
     def on_advance(beats, idx, scene: SceneState, prev_bg: str, log_text: str):
         """Reveal the next beat (click-the-screen / Space / Enter).
@@ -344,7 +395,8 @@ def make_callbacks(bg_provider: BackgroundProvider):
         info = f"Turn {scene.turn} · {scene.background} ({scene.mood})"
         return screen, new_idx, voice_path, info, new_prev_bg
 
-    def on_free_submit(text: str, scene: SceneState, engine, prev_bg: str):
+    def on_free_submit(text: str, scene: SceneState, engine, prev_bg: str,
+                       prev_log: str = ""):
         """Free-text action → a scene turn. Wraps on_choice and ALSO clears
         the input box server-side (returns "" into free_input) — no JS race.
 
@@ -353,11 +405,11 @@ def make_callbacks(bg_provider: BackgroundProvider):
         if not (text or "").strip() or not engine or not scene:
             # Nothing to do — keep the box contents, change nothing else
             return tuple(gr.skip() for _ in range(12))
-        result = on_choice("__free__", text.strip(), scene, engine, prev_bg)
+        result = on_choice("__free__", text.strip(), scene, engine, prev_bg, prev_log)
         return (*result, "")   # clear free_input
 
     def on_reset():
         return _empty()
 
     return (on_start, on_choice, on_save, on_load, on_reset, on_advance, on_free_submit,
-            on_casting_confirm, on_casting_redo)
+            on_casting_confirm, on_casting_redo, on_menu_load)

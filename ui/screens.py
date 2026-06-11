@@ -5,21 +5,57 @@ from __future__ import annotations
 import html as _html
 
 from vn_contracts import CastMember, Choice
+from vn_engine import list_saves
 
 from .media import data_uri, thumb_data_uri
 
 
-def _title_screen_html() -> str:
-    """The title card + cast-setup step, rendered inside the VN canvas.
+def _slot_rows_html(selectable_empty: bool = True) -> str:
+    """Rich save-slot rows: name, chapter · turn, cast and timestamp.
 
-    Two sections, toggled by `body.cast-setup-active`:
+    Used by both the in-game save panel (all slots selectable) and the
+    main-menu load list (empty slots rendered but not clickable)."""
+    rows = []
+    for meta in list_saves():
+        i = meta["slot"]
+        if meta.get("empty"):
+            cls = "vn-slot-btn empty" + ("" if selectable_empty else " disabled")
+            rows.append(
+                f'<button class="{cls}" data-slot="{i}" data-empty="1">'
+                f'<span class="vn-slot-name">Slot {i + 1} — Empty</span>'
+                f'</button>'
+            )
+            continue
+        name = _html.escape(meta["name"] or f"Slot {i + 1}")
+        cast = _html.escape(", ".join(meta["cast_names"]) or "—")
+        when = _html.escape(meta["saved_at"] or "")
+        chapter = _html.escape(meta["chapter"] or "")
+        rows.append(
+            f'<button class="vn-slot-btn" data-slot="{i}" data-empty="0">'
+            f'<span class="vn-slot-name">{name}</span>'
+            f'<span class="vn-slot-meta">{chapter} · Turn {meta["turn"]}</span>'
+            f'<span class="vn-slot-cast">{cast}</span>'
+            f'<span class="vn-slot-time">{when}</span>'
+            f'</button>'
+        )
+    return "\n".join(rows)
+
+
+def _title_screen_html() -> str:
+    """The title card + cast-setup step + load list, rendered inside the canvas.
+
+    Three sections, toggled by body classes:
       - `.vn-title-content` — the title screen (visible by default).
-      - `.vn-cast-setup`    — the cast-setup step (hidden by default).
+      - `.vn-cast-setup`    — the cast-setup step (body.cast-setup-active).
+      - `.vn-menu-load`     — the load-save list (body.menu-load-active).
 
     ONLOAD_JS bridges the HTML inputs to hidden Gradio controls so the
     card fields reach the backend when Generate Cast is clicked.
     """
-    return """
+    has_saves = any(not m.get("empty") for m in list_saves())
+    load_btn = ('<button class="vn-title-load">Load</button>' if has_saves
+                else '<button class="vn-title-load disabled" disabled>Load</button>')
+    return f"""
     <div class="vn-screen vn-title-screen">
         <div class="vn-title-content">
             <div class="vn-title-main">ARS-FABULA</div>
@@ -31,7 +67,15 @@ def _title_screen_html() -> str:
             <div class="vn-title-name-row">
                 <input type="text" class="vn-title-name-input" placeholder="Your name…" maxlength="24" value="Player">
             </div>
-            <button class="vn-title-begin">Begin</button>
+            <div class="vn-title-actions">
+                <button class="vn-title-begin">Start</button>
+                {load_btn}
+            </div>
+        </div>
+        <div class="vn-menu-load">
+            <div class="vn-ml-title">Load Save</div>
+            <div class="vn-slot-list vn-ml-list">{_slot_rows_html(selectable_empty=False)}</div>
+            <button class="vn-ml-back">Back</button>
         </div>
         <div class="vn-cast-setup">
             <div class="vn-cs-header">
@@ -125,7 +169,7 @@ def _cast_panel_html_inner(cast: dict[str, CastMember]) -> str:
     parts = []
     for name, member in cast.items():
         char = member.character
-        thumb_uri = thumb_data_uri(member.get_sprite("neutral"), height=160)
+        thumb_uri = thumb_data_uri(member.get_sprite("neutral"), height=280)
         thumb = (f'<img class="cast-panel-thumb" src="{thumb_uri}" alt="{name}">'
                  if thumb_uri else '<div class="cast-panel-thumb"></div>')
         parts.append(
@@ -171,6 +215,15 @@ def _review_screen_html(key: str, preset: dict, base_path: str,
                 if img_uri
                 else '<div class="review-no-image">Generation failed — try Redo</div>')
 
+    # The designed character: role + personality, as the story model wrote them
+    role = _html.escape(preset.get("role", "") or "")
+    personality = _html.escape(preset.get("personality", "") or "")
+    desc_html = ""
+    if role or personality:
+        role_html = f'<span class="review-role">{role}</span>' if role else ""
+        desc_html = (f'<div class="review-desc">{role_html}'
+                     f'<p class="review-personality">{personality}</p></div>')
+
     return f"""
     <div class="vn-screen vn-casting-review">
       <div class="casting-review-title">Cast Review · {char_num}/{total}</div>
@@ -178,6 +231,7 @@ def _review_screen_html(key: str, preset: dict, base_path: str,
         <div class="review-image">{img_html}</div>
         <div class="review-panel">
           <div class="review-name">{name}</div>
+          {desc_html}
           <div class="review-prompt-label">Prompt — edit and Redo to regenerate</div>
           <textarea class="review-prompt" id="review-prompt-text" rows="6">{_html.escape(prompt)}</textarea>
           <div class="review-actions">
@@ -190,17 +244,26 @@ def _review_screen_html(key: str, preset: dict, base_path: str,
     """
 
 
+def _log_html(log_text: str) -> str:
+    """Escape the session register; player-answer lines (▸-prefixed, written
+    by the turn callbacks) get their own accent styling."""
+    lines = []
+    for line in (log_text or "").split("\n"):
+        esc = _html.escape(line)
+        if line.startswith("▸ "):
+            esc = f'<span class="vn-log-answer">{esc}</span>'
+        lines.append(esc)
+    return "\n".join(lines)
+
+
 def _panels_html(log_text: str, cast_html: str) -> str:
     """The three overlay panels, rendered inside .vn-screen."""
-    slots = "".join(
-        f'<button class="vn-slot-btn{" active" if i == 0 else ""}" data-slot="{i}">{i}</button>'
-        for i in range(5)
-    )
+    slots = _slot_rows_html()
     return f"""
     <div class="vn-panel vn-panel-log">
         <button class="vn-panel-close">✕</button>
         <div class="vn-panel-title">Scene Log</div>
-        <div class="vn-log-text">{_html.escape(log_text or "")}</div>
+        <div class="vn-log-text">{_log_html(log_text)}</div>
     </div>
     <div class="vn-panel vn-panel-cast">
         <button class="vn-panel-close">✕</button>
@@ -210,7 +273,9 @@ def _panels_html(log_text: str, cast_html: str) -> str:
     <div class="vn-panel vn-panel-save">
         <button class="vn-panel-close">✕</button>
         <div class="vn-panel-title">Save / Load</div>
-        <div class="vn-slot-row">{slots}</div>
+        <div class="vn-slot-list">{slots}</div>
+        <input class="vn-save-name" type="text" maxlength="48"
+               placeholder="Save name (optional)…">
         <div class="vn-save-actions">
             <button class="vn-save-action" data-which="save">Save</button>
             <button class="vn-save-action" data-which="load">Load</button>
@@ -303,7 +368,7 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
         choices_html = "\n".join(parts)
 
     return f"""
-    <div class="vn-screen{' advancing' if more else ''}" data-more="{'1' if more else '0'}" data-typing="pending">
+    <div class="vn-screen{' advancing' if more else ''}" data-more="{'1' if more else '0'}" data-choices="{'1' if choices_html else '0'}" data-typing="pending">
         {bg_layers}
         <div class="vn-chars">{sprite_html}</div>
         {choices_html}
