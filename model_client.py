@@ -156,15 +156,20 @@ def get_model(config: Optional[ModelConfig] = None) -> ModelClient:
 # API, so we STOP the server process before a ComfyUI bake and RELAUNCH it
 # afterward, polling /health before resuming scene turns.
 #
-# Default behavior auto-detects a WSL→Windows llama-server.exe and manages
-# it with taskkill.exe / cmd.exe start. Everything is env-overridable:
-#   ARS_FABULA_LLM_MANAGE      = auto (default) | win | none | ollama
+# Default behavior auto-detects a WSL-native atomic-fork llama-server (Gemma
+# 4 26B-A4B MoE + MTP) or falls back to a WSL→Windows llama-server.exe.
+# Everything is env-overridable:
+#   ARS_FABULA_LLM_MANAGE      = auto (default) | wsl | win | none | ollama
 #   ARS_FABULA_LLM_STOP_CMD    = "<shell cmd>"   # custom stop
 #   ARS_FABULA_LLM_START_CMD   = "<shell cmd>"   # custom start (detached)
 #   ARS_FABULA_LLM_UNLOAD_URL  = "http://.../unload"
-#   ARS_FABULA_LLAMA_EXE_WIN   = C:\...\llama-server.exe
-#   ARS_FABULA_LLAMA_MODEL_WIN = C:\...\model.gguf
-#   ARS_FABULA_LLAMA_ARGS      = "<llama-server flags>"
+#   ARS_FABULA_LLAMA_EXE_WIN   = C:\\...\\llama-server.exe    # Windows mode
+#   ARS_FABULA_LLAMA_MODEL_WIN = C:\\...\\model.gguf
+#   ARS_FABULA_LLAMA_ARGS      = "<llama-server flags>"       # shared
+#   ARS_FABULA_LLAMA_BIN       = /path/to/llama-server  (WSL) # WSL mode
+#   ARS_FABULA_LLAMA_MODEL     = /path/to/model.gguf   (WSL)
+#   ARS_FABULA_LLAMA_DRAFTER   = /path/to/mtp-drafter.gguf    # MTP
+#   ARS_FABULA_LLAMA_LD_PATH   = /path/to/lib/dir             # LD_LIBRARY_PATH
 
 _DEFAULT_LLAMA_EXE_WIN = r"C:\Users\vruizes\llama-cpp-setup\llama-server.exe"
 _DEFAULT_LLAMA_MODEL_WIN = r"C:\Users\vruizes\Downloads\gemma-4-12b-it-IQ4_XS.gguf"
@@ -173,6 +178,23 @@ _DEFAULT_LLAMA_MODEL_WIN = r"C:\Users\vruizes\Downloads\gemma-4-12b-it-IQ4_XS.gg
 _DEFAULT_LLAMA_ARGS = ("-ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 16384 "
                        "--reasoning off -np 1 --cache-ram 0 "
                        "--host 0.0.0.0 --port 8110")
+
+# ── WSL-native defaults (atomic-llama-cpp-turboquant, Gemma 4 26B-A4B) ──
+_DEFAULT_LLAMA_BIN_WSL = "/mnt/c/Users/vruizes/atomic-llama-cpp-turboquant/" \
+                         "build/bin/llama-server"
+_DEFAULT_LLAMA_MODEL_WSL = "/mnt/c/Users/vruizes/Downloads/" \
+                           "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+_DEFAULT_LLAMA_DRAFTER_WSL = "/mnt/c/Users/vruizes/Downloads/" \
+                              "gemma-4-26B-A4B-it-assistant.Q4_K_M.gguf"
+_DEFAULT_LLAMA_LD_PATH_WSL = "/mnt/c/Users/vruizes/" \
+                              "atomic-llama-cpp-turboquant/build/bin"
+# 32K context, CPU MoE offload (GPU can't fit 26B MoE experts), MTP drafter,
+# no reasoning tokens (they add latency to bracket emission).
+_DEFAULT_LLAMA_ARGS_WSL = ("--spec-type mtp --draft-block-size 3 "
+                           "--draft-max 8 --draft-min 0 "
+                           "-ngl 99 -ngld 99 -fa on -ctk q8_0 -ctv q8_0 "
+                           "-c 32000 --cpu-moe --reasoning off "
+                           "--host 0.0.0.0 --port 8110")
 
 
 def _is_wsl() -> bool:
@@ -197,9 +219,14 @@ def _llm_manage_mode(cfg: ModelConfig) -> str:
     mode = os.getenv("ARS_FABULA_LLM_MANAGE", "auto").lower()
     if mode != "auto":
         return mode
-    # auto: a custom stop hook wins; else manage a WSL→Windows llama-server
+    # auto: a custom stop hook wins; then try WSL-native atomic fork,
+    # then Windows .exe via interop, then ollama.
     if os.getenv("ARS_FABULA_LLM_STOP_CMD"):
         return "cmd"
+    # Check for WSL-native atomic-fork binary first
+    bin_path = os.getenv("ARS_FABULA_LLAMA_BIN", _DEFAULT_LLAMA_BIN_WSL)
+    if _is_wsl() and os.path.exists(bin_path):
+        return "wsl"
     exe = os.getenv("ARS_FABULA_LLAMA_EXE_WIN", _DEFAULT_LLAMA_EXE_WIN)
     if _is_wsl() and os.path.exists(_win_to_wsl(exe)):
         return "win"
@@ -251,6 +278,19 @@ def release_vram(config: Optional[ModelConfig] = None) -> bool:
                 continue
         print("[vram] taskkill unavailable — could not stop llama-server")
         return False
+
+    if mode == "wsl":
+        # Kill the WSL-native atomic-fork llama-server (Linux process)
+        try:
+            subprocess.run(["pkill", "-f", "build/bin/llama-server"],
+                           timeout=15, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("[vram] WSL llama-server stopped (pkill build/bin/llama-server)")
+            time.sleep(2)
+            return True
+        except Exception as e:
+            print(f"[vram] pkill failed: {e}")
+            return False
 
     url = os.getenv("ARS_FABULA_LLM_UNLOAD_URL")
     if url:
@@ -330,6 +370,38 @@ def ensure_llm(config: Optional[ModelConfig] = None, timeout: int = 120) -> bool
                         break
                     except Exception:
                         continue
+
+    elif mode == "wsl":
+        # Launch the WSL-native atomic-fork llama-server (Gemma 4 26B-A4B
+        # MoE + MTP drafter). The binary is a Linux ELF with CUDA deps, so
+        # LD_LIBRARY_PATH must point at its build/bin for libggml*.so etc.
+        bin_path = os.getenv("ARS_FABULA_LLAMA_BIN", _DEFAULT_LLAMA_BIN_WSL)
+        model_path = os.getenv("ARS_FABULA_LLAMA_MODEL",
+                               _DEFAULT_LLAMA_MODEL_WSL)
+        drafter_path = os.getenv("ARS_FABULA_LLAMA_DRAFTER",
+                                 _DEFAULT_LLAMA_DRAFTER_WSL)
+        ld_path = os.getenv("ARS_FABULA_LLAMA_LD_PATH",
+                            _DEFAULT_LLAMA_LD_PATH_WSL)
+        args_str = os.getenv("ARS_FABULA_LLAMA_ARGS",
+                             _DEFAULT_LLAMA_ARGS_WSL)
+        import shlex
+        cmd = [bin_path, "-m", model_path,
+               "--mtp-head", drafter_path] + shlex.split(args_str)
+        launch_env = os.environ.copy()
+        launch_env["LD_LIBRARY_PATH"] = (
+            f"{ld_path}:{launch_env.get('LD_LIBRARY_PATH', '')}"
+        )
+        try:
+            subprocess.Popen(cmd, env=launch_env,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL,
+                             start_new_session=True)
+            started = True
+            print(f"[vram] atomic-fork llama-server starting (WSL-native): "
+                  f"{bin_path}")
+        except Exception as e:
+            print(f"[vram] WSL launch failed: {e}")
 
     if not started:
         # Nothing we could launch — wait only a short grace period in case
