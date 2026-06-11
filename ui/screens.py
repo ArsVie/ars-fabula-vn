@@ -1,0 +1,367 @@
+"""HTML builders for the VN canvas — title, casting, review, cast panel,
+and the main scene screen.
+"""
+from __future__ import annotations
+import html as _html
+
+from vn_contracts import CastMember, Choice
+
+from .media import data_uri, thumb_data_uri
+
+
+def _title_screen_html() -> str:
+    """The title card + cast-setup step, rendered inside the VN canvas.
+
+    Two sections, toggled by `body.cast-setup-active`:
+      - `.vn-title-content` — the title screen (visible by default).
+      - `.vn-cast-setup`    — the cast-setup step (hidden by default).
+
+    ONLOAD_JS bridges the HTML inputs to hidden Gradio controls so the
+    card fields reach the backend when Generate Cast is clicked.
+    """
+    return """
+    <div class="vn-screen vn-title-screen">
+        <div class="vn-title-content">
+            <div class="vn-title-main">ARS-FABULA</div>
+            <div class="vn-title-sub">A Slice-of-Life Visual Novel</div>
+            <div class="vn-title-cast-choice">
+                <button class="vn-title-opt active" data-preset="generated">Generated Cast</button>
+                <button class="vn-title-opt" data-preset="curated">Curated Cast</button>
+            </div>
+            <div class="vn-title-name-row">
+                <input type="text" class="vn-title-name-input" placeholder="Your name…" maxlength="24" value="Player">
+            </div>
+            <button class="vn-title-begin">Begin</button>
+        </div>
+        <div class="vn-cast-setup">
+            <div class="vn-cs-header">
+                <div class="vn-cs-title">Cast Setup</div>
+                <div class="vn-cs-desc">
+                    <p>Leave every card blank to generate the default cast
+                    (Yuki, Marie, Sakura). Otherwise fill <strong>Name + Concept</strong>
+                    and the story model designs the character (e.g. concept
+                    <em>childhood friend</em> becomes a warm, brown-haired genki design).</p>
+                    <p><strong>Advanced tags</strong> override the designer with your own
+                    Danbooru appearance tags (start with <code>1girl</code>/<code>1boy</code>;
+                    hair, eyes, clothing, accessories only). Only the framing essentials
+                    are locked on — body attitude is yours (add stance tags like
+                    <code>hand on hip</code>, <code>arms crossed</code>).
+                    Editing a design auto-invalidates that character's sprite cache.</p>
+                </div>
+            </div>
+            <div class="vn-cs-cards">
+                <div class="vn-cs-card" data-cs-idx="0">
+                    <div class="vn-cs-card-row">
+                        <div class="vn-cs-field vn-cs-field-name">
+                            <label>Name</label>
+                            <input class="vn-cs-input vn-cs-name" data-cs-field="name" data-cs-idx="0"
+                                   placeholder="e.g. Mio" maxlength="24">
+                        </div>
+                        <div class="vn-cs-field vn-cs-field-concept">
+                            <label>Concept</label>
+                            <input class="vn-cs-input vn-cs-concept" data-cs-field="concept" data-cs-idx="0"
+                                   placeholder="e.g. shy bookworm childhood friend" maxlength="64">
+                        </div>
+                    </div>
+                    <div class="vn-cs-tags-row">
+                        <input class="vn-cs-input vn-cs-tags-input" data-cs-field="tags" data-cs-idx="0"
+                               placeholder="Advanced tags: 1girl, silver hair, long hair, blue eyes, ..." maxlength="256">
+                    </div>
+                </div>
+                <div class="vn-cs-card" data-cs-idx="1">
+                    <div class="vn-cs-card-row">
+                        <div class="vn-cs-field vn-cs-field-name">
+                            <label>Name</label>
+                            <input class="vn-cs-input vn-cs-name" data-cs-field="name" data-cs-idx="1"
+                                   placeholder="e.g. Rin" maxlength="24">
+                        </div>
+                        <div class="vn-cs-field vn-cs-field-concept">
+                            <label>Concept</label>
+                            <input class="vn-cs-input vn-cs-concept" data-cs-field="concept" data-cs-idx="1"
+                                   placeholder="e.g. tsundere rival" maxlength="64">
+                        </div>
+                    </div>
+                    <div class="vn-cs-tags-row">
+                        <input class="vn-cs-input vn-cs-tags-input" data-cs-field="tags" data-cs-idx="1"
+                               placeholder="Advanced tags: 1girl, silver hair, long hair, blue eyes, ..." maxlength="256">
+                    </div>
+                </div>
+                <div class="vn-cs-card" data-cs-idx="2">
+                    <div class="vn-cs-card-row">
+                        <div class="vn-cs-field vn-cs-field-name">
+                            <label>Name</label>
+                            <input class="vn-cs-input vn-cs-name" data-cs-field="name" data-cs-idx="2"
+                                   placeholder="e.g. Aoi" maxlength="24">
+                        </div>
+                        <div class="vn-cs-field vn-cs-field-concept">
+                            <label>Concept</label>
+                            <input class="vn-cs-input vn-cs-concept" data-cs-field="concept" data-cs-idx="2"
+                                   placeholder="e.g. mysterious senpai" maxlength="64">
+                        </div>
+                    </div>
+                    <div class="vn-cs-tags-row">
+                        <input class="vn-cs-input vn-cs-tags-input" data-cs-field="tags" data-cs-idx="2"
+                               placeholder="Advanced tags: 1girl, silver hair, long hair, blue eyes, ..." maxlength="256">
+                    </div>
+                </div>
+            </div>
+            <label class="vn-cs-fast">
+                <input type="checkbox" class="vn-cs-fast-cb">
+                <span>Fast generation (lower resolution — quicker bake, softer detail)</span>
+            </label>
+            <div class="vn-cs-actions">
+                <button class="vn-cs-btn vn-cs-back" data-action="cast-setup-back">Back</button>
+                <button class="vn-cs-btn vn-cs-go" data-action="cast-setup-go">Generate Cast</button>
+            </div>
+        </div>
+    </div>
+    """
+
+
+def _cast_panel_html_inner(cast: dict[str, CastMember]) -> str:
+    """Inner HTML for the in-canvas cast overlay (thumb + identity)."""
+    if not cast:
+        return '<div class="cast-panel-empty">No cast — start a story.</div>'
+    parts = []
+    for name, member in cast.items():
+        char = member.character
+        thumb_uri = thumb_data_uri(member.get_sprite("neutral"), height=160)
+        thumb = (f'<img class="cast-panel-thumb" src="{thumb_uri}" alt="{name}">'
+                 if thumb_uri else '<div class="cast-panel-thumb"></div>')
+        parts.append(
+            f'<div class="cast-panel-card">{thumb}'
+            f'<div class="cast-panel-info">'
+            f'<div class="cast-panel-name">{char.name}</div>'
+            f'<div class="cast-panel-role">{char.role}</div>'
+            f'<div class="cast-panel-personality">{char.personality}</div>'
+            f'</div></div>'
+        )
+    return "\n".join(parts)
+
+
+_ICON_TRAY_HTML = """
+<div class="vn-icon-tray">
+  <button class="vn-tray-btn" data-action="log">Log</button>
+  <button class="vn-tray-btn" data-action="cast">Cast</button>
+  <button class="vn-tray-btn" data-action="save">Save</button>
+  <button class="vn-tray-btn" data-action="reset"><span class="vn-tray-normal">Reset</span><span
+    class="vn-tray-confirm-row"><span class="vn-reset-confirm">Confirm</span>&nbsp;/&nbsp;<span
+    class="vn-reset-cancel">Cancel</span></span></button>
+</div>
+"""
+
+
+
+
+
+def _review_screen_html(key: str, preset: dict, base_path: str,
+                         char_num: int, total: int) -> str:
+    """Per-character review screen during interactive casting.
+
+    Shows the generated base image alongside the full prompt text
+    (editable) and Confirm/Redo buttons. The JS bridge writes the
+    textarea value to the hidden #casting-prompt-box before clicking
+    the hidden confirm/redo Gradio buttons.
+    """
+    name = preset.get("name", key.capitalize())
+    prompt = preset.get("identity_prompt", "")
+    img_uri = data_uri(base_path) if base_path else ""
+
+    img_html = (f'<img src="{img_uri}" alt="{name} base">'
+                if img_uri
+                else '<div class="review-no-image">Generation failed — try Redo</div>')
+
+    return f"""
+    <div class="vn-screen vn-casting-review">
+      <div class="casting-review-title">Cast Review · {char_num}/{total}</div>
+      <div class="review-layout">
+        <div class="review-image">{img_html}</div>
+        <div class="review-panel">
+          <div class="review-name">{name}</div>
+          <div class="review-prompt-label">Prompt — edit and Redo to regenerate</div>
+          <textarea class="review-prompt" id="review-prompt-text" rows="6">{_html.escape(prompt)}</textarea>
+          <div class="review-actions">
+            <button class="review-btn confirm" data-action="casting-confirm">&#10003; Confirm</button>
+            <button class="review-btn redo" data-action="casting-redo">&#8635; Redo</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+
+
+def _panels_html(log_text: str, cast_html: str) -> str:
+    """The three overlay panels, rendered inside .vn-screen."""
+    slots = "".join(
+        f'<button class="vn-slot-btn{" active" if i == 0 else ""}" data-slot="{i}">{i}</button>'
+        for i in range(5)
+    )
+    return f"""
+    <div class="vn-panel vn-panel-log">
+        <button class="vn-panel-close">✕</button>
+        <div class="vn-panel-title">Scene Log</div>
+        <div class="vn-log-text">{_html.escape(log_text or "")}</div>
+    </div>
+    <div class="vn-panel vn-panel-cast">
+        <button class="vn-panel-close">✕</button>
+        <div class="vn-panel-title">Cast</div>
+        {cast_html}
+    </div>
+    <div class="vn-panel vn-panel-save">
+        <button class="vn-panel-close">✕</button>
+        <div class="vn-panel-title">Save / Load</div>
+        <div class="vn-slot-row">{slots}</div>
+        <div class="vn-save-actions">
+            <button class="vn-save-action" data-which="save">Save</button>
+            <button class="vn-save-action" data-which="load">Load</button>
+        </div>
+        <div class="vn-save-status"></div>
+    </div>
+    """
+
+
+def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
+                    present: list[str], expressions: dict[str, str],
+                    dialogue_speaker: str = "", dialogue_text: str = "",
+                    choices: list[Choice] | None = None,
+                    narration: str = "",
+                    prev_bg_path: str = "",
+                    more: bool = False,
+                    log_text: str = "",
+                    cast_html: str = "") -> str:
+    """Build the VN screen HTML: crossfading bg layers, sprites, dialogue, choices.
+
+    `more=True` marks the screen as having further beats to read this turn:
+    it adds a ▼ continue hint and a `data-more="1"` flag the JS click/keyboard
+    hook uses to advance the reader one beat at a time.
+    """
+    bg_layers = ""
+    prev_uri = data_uri(prev_bg_path) if prev_bg_path and prev_bg_path != bg_path else ""
+    curr_uri = data_uri(bg_path)
+    if prev_uri:
+        bg_layers += f'<img class="vn-bg old" src="{prev_uri}" alt="">'
+    if curr_uri:
+        bg_layers += f'<img class="vn-bg new" src="{curr_uri}" alt="">'
+
+    # Sprites — the speaking character is .active, the rest .inactive (dimmed).
+    # During pure narration (no speaker) everyone stays normal.
+    sprite_html = ""
+    for name in present:
+        member = cast.get(name)
+        if not member:
+            continue
+        expr = expressions.get(name, "neutral")
+        sprite_uri = data_uri(member.get_sprite(expr))
+        if sprite_uri:
+            state = ""
+            if dialogue_speaker:
+                state = " active" if name == dialogue_speaker else " inactive"
+            sprite_html += (f'<img class="vn-sprite{state}" data-expr="{name}:{expr}" '
+                            f'src="{sprite_uri}" alt="{name} ({expr})">')
+
+    # Dialogue — name plate, then text (HUD removed)
+    dialogue_html = ""
+    if dialogue_text or narration:
+        dialogue_html += '<div class="vn-dialogue-inner">'
+        if dialogue_text:
+            if dialogue_speaker:
+                dialogue_html += f'<div class="vn-name-plate">{dialogue_speaker}</div>'
+            dialogue_html += f'<p class="vn-text{" narrator" if not dialogue_speaker else ""}">{dialogue_text}</p>'
+        elif narration:
+            dialogue_html += f'<p class="vn-text narrator">{narration}</p>'
+        dialogue_html += '</div>'
+    if more:
+        dialogue_html += '<div class="vn-continue">▼</div>'
+    dialogue_html += _ICON_TRAY_HTML
+
+    # Interaction cluster — shown on the LAST beat (not while there are more
+    # beats to read): the offered choices (if any) plus a free-text capsule as
+    # the final item, so the whole set reads as one centered column. It lives
+    # INSIDE the canvas, so it scales with the frame (not the page) and centers
+    # with the choices; the typing-done CSS gate hides it until the line ends.
+    choices_html = ""
+    if not more:
+        parts = ['<div class="vn-choices">']
+        for c in (choices or []):
+            safe_text = c.text.replace('"', '&quot;')
+            parts.append(
+                f'<button class="vn-choice-btn" '
+                f'data-choice-id="{c.id}" data-choice-text="{safe_text}">'
+                f'{c.text}</button>'
+            )
+        # Free-text capsule — always the last item, so the player is never
+        # locked to the offered choices. Wired to the hidden Gradio bridge by JS.
+        parts.append(
+            '<div class="vn-free-capsule">'
+            '<input class="vn-free-text" type="text" autocomplete="off" '
+            'placeholder="Your choice…">'
+            '<button class="vn-free-go" data-action="free-send" '
+            'aria-label="Send">➤</button>'
+            '</div>'
+        )
+        parts.append('</div>')
+        choices_html = "\n".join(parts)
+
+    return f"""
+    <div class="vn-screen{' advancing' if more else ''}" data-more="{'1' if more else '0'}" data-typing="pending">
+        {bg_layers}
+        <div class="vn-chars">{sprite_html}</div>
+        {choices_html}
+        <div class="vn-dialogue{' has-speaker' if dialogue_speaker else ''}">{dialogue_html}</div>
+        {_panels_html(log_text, cast_html)}
+    </div>"""
+
+
+def _casting_screen_html(char_keys: list[str],
+                         resolved: dict[str, CastMember],
+                         message: str = "Assembling your cast…") -> str:
+    """The casting-beat screen: portraits resolve one by one."""
+    portraits = []
+    for key in char_keys:
+        # Preset keys are lowercase slugs; custom names arrive display-ready
+        name = key.capitalize() if key.islower() else key
+        member = resolved.get(name)
+        if member:
+            uri = data_uri(member.get_sprite("neutral"))
+            inner = (f'<img src="{uri}" alt="{name}">' if uri
+                     else f'<div class="pname">{name}</div>')
+            portraits.append(
+                f'<div class="portrait-wrap">'
+                f'<div class="vn-portrait">{inner}</div>'
+                f'<div class="pname">{name}</div></div>'
+            )
+        else:
+            portraits.append(
+                f'<div class="portrait-wrap">'
+                f'<div class="vn-portrait pending">…</div>'
+                f'<div class="pname pending">?</div></div>'
+            )
+
+    return f"""
+    <div class="vn-screen">
+        <div class="vn-casting">
+            <div class="casting-title">✦ {message}</div>
+            <div class="portraits">{''.join(portraits)}</div>
+        </div>
+    </div>
+    """
+
+
+def _cast_panel_html(cast: dict[str, CastMember]) -> str:
+    """Build HTML for the cast info panel."""
+    if not cast:
+        return '<div class="cast-panel-empty">No cast yet — start a story.</div>'
+    parts = ['<div style="padding:8px;">']
+    for name, member in cast.items():
+        char = member.character
+        parts.append(
+            f'<div class="cast-card">'
+            f'<div class="name">{char.name}</div>'
+            f'<div class="role">{char.role} · ♪ {char.voice_id}</div>'
+            f'<div class="personality">{char.personality}</div>'
+            f'<div class="cast-expressions">'
+            f'Expressions: {", ".join(member.expression_map.keys())}'
+            f'</div></div>'
+        )
+    parts.append('</div>')
+    return "\n".join(parts)
