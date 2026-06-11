@@ -363,16 +363,21 @@ body { background: var(--bg-void) !important; }
   to   { opacity: 1;   transform: translateY(0)    scale(1); }
 }
 
-/* ── Dialogue Box ── (shorter now; tray sits centered at its bottom) */
+/* ── Dialogue Box ── (floated 20px above canvas bottom, 4:3 inner column) */
 .vn-dialogue {
   position: absolute;
-  bottom: 0; left: 0; right: 0;
+  bottom: 20px; left: 0; right: 0;
   background: linear-gradient(to top, rgba(8,8,26,0.97) 0%, rgba(8,8,26,0.85) 60%, transparent 100%);
-  padding: 14px 28px 30px;   /* extra bottom room for the centered tray */
-  min-height: 92px;
+  padding: 14px 16px 36px;
+  min-height: 140px;
 }
 .vn-dialogue.has-speaker {
   border-left: 3px solid var(--border-accent);
+}
+/* 4:3 centered column — constrains dialogue text to a readable column */
+.vn-dialogue-inner {
+  max-width: min(75%, 960px);
+  margin: 0 auto;
 }
 .vn-name-plate {
   display: inline-block;
@@ -399,9 +404,8 @@ body { background: var(--bg-void) !important; }
   color: var(--text-primary);
   font-size: 1.15rem;
   line-height: 1.7;
-  margin: 0 auto;        /* centered inside dialogue box */
-  text-align: center;    /* centered lines */
-  max-width: 80%;        /* 80% of parent .vn-dialogue */
+  text-align: left;
+  padding: 0 16px;
   text-indent: 0;
 }
 .vn-text.narrator {
@@ -434,7 +438,7 @@ body { background: var(--bg-void) !important; }
    in the same centered column — one interaction cluster, not two) */
 .vn-choices {
   position: absolute;
-  bottom: 206px;
+  bottom: 240px;
   left: 50%;
   transform: translateX(-50%);
   width: 70%;
@@ -445,7 +449,6 @@ body { background: var(--bg-void) !important; }
 }
 .vn-choice-btn {
   background: rgba(19,19,42,0.88) !important;
-  backdrop-filter: blur(8px);
   border: 1px solid var(--border-mid) !important;
   border-left: 3px solid var(--border-accent) !important;
   color: var(--text-primary) !important;
@@ -1112,8 +1115,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
 
 /* ── Choice restyle (scrim + accent bar, dialogue voice) ── */
 .vn-choice-btn {
-  background: rgba(8,8,26,0.55) !important;
-  backdrop-filter: blur(4px);
+  background: rgba(8,8,26,0.72) !important;
   border: none !important;
   border-left: 2px solid var(--border-accent) !important;
   color: var(--text-primary) !important;
@@ -1159,13 +1161,12 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   flex-wrap: nowrap !important;   /* Gradio rows wrap by default — keep ➤ inline */
   gap: 0;
   position: absolute;
-  bottom: 140px;
+  bottom: 170px;
   left: 50%;
   transform: translateX(-50%);
   width: 70%;
   z-index: 6;                 /* above dialogue (4) and choices (5) */
-  background: rgba(8,8,26,0.55);
-  backdrop-filter: blur(4px);
+  background: rgba(8,8,26,0.72);
   border: none;
   border-left: 2px solid var(--border-accent);
   border-radius: 0;
@@ -1781,12 +1782,15 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
 
     # Dialogue — name plate, then text (HUD removed)
     dialogue_html = ""
-    if dialogue_text:
-        if dialogue_speaker:
-            dialogue_html += f'<div class="vn-name-plate">{dialogue_speaker}</div>'
-        dialogue_html += f'<p class="vn-text{" narrator" if not dialogue_speaker else ""}">{dialogue_text}</p>'
-    elif narration:
-        dialogue_html += f'<p class="vn-text narrator">{narration}</p>'
+    if dialogue_text or narration:
+        dialogue_html += '<div class="vn-dialogue-inner">'
+        if dialogue_text:
+            if dialogue_speaker:
+                dialogue_html += f'<div class="vn-name-plate">{dialogue_speaker}</div>'
+            dialogue_html += f'<p class="vn-text{" narrator" if not dialogue_speaker else ""}">{dialogue_text}</p>'
+        elif narration:
+            dialogue_html += f'<p class="vn-text narrator">{narration}</p>'
+        dialogue_html += '</div>'
     if more:
         dialogue_html += '<div class="vn-continue">▼</div>'
     dialogue_html += _ICON_TRAY_HTML
