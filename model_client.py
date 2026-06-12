@@ -112,16 +112,17 @@ class LlamaServerClient(ModelClient):
 # torch + transformers are installed.
 
 # HF repo ids tried in order when ARS_FABULA_MODEL isn't itself a repo id.
-# First choice is THE project model — Gemma 4 26B-A4B, the same one served
-# locally as a Q4_K_M GGUF. GGUF itself is a llama.cpp runtime format and
-# can't take the GPU on ZeroGPU (only in-process PyTorch can), so we load
-# Google's QAT checkpoint — weights trained to be quantized to 4-bit — and
-# quantize with bitsandbytes at load (~15GB, same precision class as the
-# local GGUF, fits the 48GB slice with room). Gemma repos are license-
-# gated — if the Space token can't access them, fall through to an ungated
-# small model rather than dropping the whole demo to mock.
+# First choice is Gemma 4 12B in bf16 (~24GB — fits both the Space's 50GB
+# ephemeral disk and the 48GB ZeroGPU slice; the VN was originally tuned
+# against gemma-12b locally). The 26B-A4B MoE the dev box runs is NOT
+# viable on ZeroGPU: its transformers-format repos are unquantized bf16
+# (~52GB > the 50GB disk) and no transformers-loadable 4-bit repo exists —
+# the 26B path is the Docker/T4 Space (llama.cpp GGUF), not this one.
+# Gemma repos are license-gated: the Space needs an HF_TOKEN secret from
+# an account that accepted the license, else we fall through to an
+# ungated small model rather than dropping the whole demo to mock.
 _HF_MODEL_CANDIDATES = [
-    ("google/gemma-4-26B-A4B-it-qat-q4_0-unquantized", "4bit"),
+    ("google/gemma-4-12b-it", ""),
     ("google/gemma-3-4b-it", ""),
     ("Qwen/Qwen3-4B-Instruct-2507", ""),
 ]
