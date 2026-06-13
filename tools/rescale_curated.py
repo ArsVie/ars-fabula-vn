@@ -1,9 +1,16 @@
-"""Rescale curated sprites so faces are 22% of the output canvas height.
+"""Rescale curated sprites so faces are 20% of the output canvas height.
+
+DEPRECATED — prefer `tools/reframe_curated.py`, the canonical curated framer.
+This tool applies a single constant scale (no per-character face normalisation,
+no min-figure-height floor, no feet-drop crop), so its output does NOT match the
+generated-cast bake (cast_pipeline._frame_upper_body) and mixing the two yields
+unequal faces across a cast. It is kept only for one-off constant rescales; for
+the production look run `python tools/reframe_curated.py` instead.
 
 Old framing: face = H * FACE_TARGET_FRAC = 896 * 0.135 = 120.96 px
-New framing: face = H0 * 0.22            = 1254 * 0.22 = 275.88 px
+New framing: face = H0 * 0.20            = 1254 * 0.20 = 250.8 px
 
-Constant scale factor: 275.88 / 120.96 ≈ 2.281
+Constant scale factor: 250.8 / 120.96 ≈ 2.073
 
 Instead of center-crop (which clips the face), anchors the crop on the
 character's alpha-bbox crown + horizontal center so the face region is
@@ -25,10 +32,12 @@ FACE_TARGET_FRAC = 0.135
 SPRITE_CANVAS_MULT = 1.4
 H0 = int(H * SPRITE_CANVAS_MULT)
 
-FACTOR = (H0 * 0.22) / (H * FACE_TARGET_FRAC)
+FACTOR = (H0 * 0.20) / (H * FACE_TARGET_FRAC)
 
 
 def rescale_curated():
+    print("  [rescale] DEPRECATED — prefer tools/reframe_curated.py "
+          "(matches the generated bake; this constant rescale does not).")
     if not os.path.isdir(CURATED_DIR):
         print(f"  [rescale] No curated dir at {CURATED_DIR}")
         return

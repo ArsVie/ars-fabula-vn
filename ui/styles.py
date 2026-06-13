@@ -7,9 +7,16 @@ import os
 # Font for CHARACTER dialogue lines (the narrator keeps --font-dialogue).
 # Env-overridable — pass a full CSS font-family stack, e.g.
 #   ARS_FABULA_DIALOGUE_FONT="'Sazanami Gothic', monospace"
+#
+# 'MS Gothic' (and 'MS PGothic'/'Osaka-Mono') are Windows/mac-only and ABSENT on
+# the Linux HF-Spaces deploy target, where the stack used to fall through to a
+# generic 'monospace' — losing the retro-VN look. 'DotGothic16' (loaded from
+# Google Fonts in the @import below) is a 16-dot bitmap-gothic webfont built to
+# mimic exactly that MS-Gothic aesthetic, so it carries the look everywhere a
+# local MS Gothic is unavailable while Windows users still get the real thing.
 CHARACTER_FONT = os.getenv(
     "ARS_FABULA_DIALOGUE_FONT",
-    "'MS Gothic', 'MS PGothic', 'Osaka-Mono', monospace",
+    "'MS Gothic', 'MS PGothic', 'DotGothic16', 'Osaka-Mono', monospace",
 )
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -18,7 +25,7 @@ CHARACTER_FONT = os.getenv(
 
 CSS = """
 /* ── Fonts ── */
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Cinzel:wght@400;600&family=Noto+Sans+JP:wght@300;400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Cinzel:wght@400;600&family=Noto+Sans+JP:wght@300;400&family=DotGothic16&display=swap');
 
 /* ── Tokens ── */
 :root {
@@ -133,11 +140,15 @@ body.cast-setup-active .vn-cast-setup {
   height: 48cqw;
   max-height: 86%;
   width: auto;
-  max-width: 34%;            /* must exceed the widest bake canvas's display
+  max-width: 37%;            /* must exceed the widest bake canvas's display
                                 width — if this cap binds, object-fit:contain
                                 letterboxes the sprite and SHRINKS that
                                 character's face below the equal-face target.
-                                Bake canvases now widen to fit wide poses
+                                At the 20%-face framing the widest cast member
+                                (marie, ~940×1254 ⇒ ~36% display) just clears
+                                this; three sprites still sum < 100% because the
+                                others are far narrower (~27%), so 3-up doesn't
+                                overlap. Bake canvases widen to fit wide poses
                                 (cast_pipeline fig_w), so keep headroom here. */
   object-fit: contain;
   object-position: bottom center;
@@ -363,19 +374,19 @@ body.cast-setup-active .vn-cast-setup {
 }
 .vn-loading-star {
   color: var(--text-accent);
-  font-size: 2.2rem;
+  font-size: clamp(1.6rem, 3.4cqw, 2.6rem);
   animation: vnPulse 1.2s ease infinite;
 }
 .vn-loading-msg {
   font-family: var(--font-display);
   color: var(--text-accent);
-  font-size: 1.1rem;
+  font-size: clamp(0.95rem, 1.8cqw, 1.5rem);
   letter-spacing: 0.15em;
 }
 .vn-loading-sub {
   font-family: var(--font-ui);
   color: var(--text-secondary);
-  font-size: 0.78rem;
+  font-size: clamp(0.7rem, 1.05cqw, 0.95rem);
   letter-spacing: 0.08em;
 }
 
@@ -392,13 +403,13 @@ body.cast-setup-active .vn-cast-setup {
 .vn-casting .casting-title {
   font-family: var(--font-display);
   color: var(--text-accent);
-  font-size: 1.1rem;
+  font-size: clamp(0.95rem, 1.8cqw, 1.5rem);
   letter-spacing: 0.15em;
   animation: vnPulse 1.6s ease infinite;
 }
 .vn-casting .portraits { display: flex; gap: 24px; }
 .vn-portrait {
-  width: 110px; height: 160px;
+  width: clamp(82px, 9cqw, 130px); height: clamp(120px, 13cqw, 190px);
   border-radius: 6px;
   border: 1px solid var(--border-mid);
   background: var(--bg-surface);
@@ -417,7 +428,7 @@ body.cast-setup-active .vn-cast-setup {
 }
 .pname {
   font-family: var(--font-ui);
-  font-size: 0.78rem;
+  font-size: clamp(0.66rem, 0.95cqw, 0.92rem);
   color: var(--text-accent);
   margin-top: 4px;
   letter-spacing: 0.06em;
@@ -436,6 +447,8 @@ body.cast-setup-active .vn-cast-setup {
   align-items: center;
   justify-content: center;
   height: 100%;
+  max-height: 100%;
+  overflow-y: auto;
   background: radial-gradient(ellipse at center, #1c1c38 0%, var(--bg-screen) 70%);
   padding: 20px;
 }
@@ -452,11 +465,12 @@ body.cast-setup-active .vn-cast-setup {
   align-items: flex-start;
   width: 100%;
   max-width: 800px;
+  max-height: 100%;
   justify-content: center;
 }
 .review-image {
-  width: 220px;
-  height: 380px;
+  width: clamp(150px, 18cqw, 240px);
+  height: clamp(250px, 31cqw, 400px);
   border: 1px solid var(--border-mid);
   border-radius: 6px;
   overflow: hidden;
@@ -1087,7 +1101,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   align-items: center;
   gap: 22px;
 }
-.vn-title-screen .vn-title-main { font-size: 3rem; letter-spacing: 0.35em; }
+.vn-title-screen .vn-title-main { font-size: clamp(1.7rem, 4cqw, 3.1rem); letter-spacing: 0.35em; }
 .vn-title-screen .vn-title-sub  { font-size: 0.95rem; margin-top: -14px; }
 .vn-title-cast-choice {
   display: flex;
@@ -1206,7 +1220,7 @@ body.menu-load-active .vn-menu-load {
   padding: 8px 14px;
   border-radius: 3px;
   text-align: center;
-  width: 220px;
+  width: clamp(160px, 20cqw, 280px);
   transition: border-color 0.15s;
 }
 .vn-title-name-input:focus {
@@ -1441,7 +1455,7 @@ body.menu-load-active .vn-menu-load {
   box-shadow: none !important;
   outline: none !important;
   color: var(--text-primary) !important;
-  font-family: var(--font-dialogue) !important;
+  font-family: var(--font-character) !important;
   font-style: italic !important;
   font-size: 1.05rem !important;
   caret-color: var(--text-accent) !important;

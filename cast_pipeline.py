@@ -138,13 +138,29 @@ UPPER_BODY_FRAC = float(os.getenv("ARS_FABULA_SPRITE_FRAC", "0.62"))
 # identically. Falls back to the crude alpha-crown crop when no mask exists.
 #
 # GEOMETRY LIMIT: the visible span is (figure-height-in-faces − FEET_DROP_FACES)
-# × FACE_TARGET_FRAC of the scene. The current cast measures 7.6–8.3 faces tall,
-# so 0.13 is the largest face fraction that keeps every crown on-screen with
-# feet at −2 faces; raising it toward 1/5 crops heads at the canvas top.
-FACE_TARGET_FRAC = float(os.getenv("ARS_FABULA_FACE_TARGET", "0.13"))  # face height ÷ SCENE height
-FEET_DROP_FACES = float(os.getenv("ARS_FABULA_FEET_DROP", "2.0"))      # feet this many face-heights below the bottom
+# × FACE_TARGET_FRAC of the scene. The current cast measures 7.6–8.3 faces tall.
+# A bigger face fraction = a closer (more "bust-framed") shot; the crown stays
+# on-screen only while  (tallest_faces − FEET_DROP_FACES) × FACE_CANVAS_FRAC ≤ 1
+# where FACE_CANVAS_FRAC = FACE_TARGET_FRAC / UI_SPRITE_FRAC (face ÷ CANVAS).
+#
+# Tuned for FACE_CANVAS_FRAC ≈ 0.20 (faces a fifth of the canvas height — bigger
+# than the old 0.13/0.86≈0.15, which read as small, distant figures whose short
+# legs made big-headed art look stumpy/"midget", but NOT a tight bust: at 0.20
+# the sprites stay narrow enough that three fit side-by-side under the UI's
+# max-width:34% cap without overlapping. Feet drop −3.3 faces (an upper-body
+# crop) so the tallest (8.3-face) crown still clears the top:
+#   FACE_TARGET_FRAC 0.172 (÷0.86 ⇒ 0.20 of canvas);  (8.3−3.3)×0.20 = 1.0 ≤ 1.
+FACE_TARGET_FRAC = float(os.getenv("ARS_FABULA_FACE_TARGET", "0.172"))  # face height ÷ SCENE height
+FEET_DROP_FACES = float(os.getenv("ARS_FABULA_FEET_DROP", "3.3"))      # feet this many face-heights below the bottom
 UI_SPRITE_FRAC = 0.86  # .vn-sprite { height: 86% } in ui/styles.py — canvas→scene factor
 SPRITE_CANVAS_MULT = float(os.getenv("ARS_FABULA_SPRITE_CANVAS", "1.4"))  # output canvas size ÷ base size (headroom for tall figures)
+# Minimum visible figure height (crown→canvas-bottom) as a fraction of the
+# canvas. Faces are normalised equal, so a SHORT character (few face-heights)
+# would otherwise sit low and small in frame — the "midget" read. When a
+# figure's crown would fall below this floor we scale that character up (its
+# face exceeds the equal-face target) so every cast member fills the frame to at
+# least this height. Set ≥ the tallest natural crown to disable the boost.
+MIN_FIGURE_CANVAS_FRAC = float(os.getenv("ARS_FABULA_MIN_FIGURE", "0.82"))  # crown height ÷ CANVAS height
 
 # ── Sprite pose block (researched danbooru framing/pose tags) ─────────
 # Locked onto EVERY identity prompt — but ONLY the essentials: framing,
@@ -1027,6 +1043,20 @@ def _frame_upper_body(char_dir: str, key: str,
         H0 = int(H * SPRITE_CANVAS_MULT)
         face_px = H0 * FACE_TARGET_FRAC / UI_SPRITE_FRAC   # target face height on canvas
         scale = face_px / face_h
+        # ── Min-figure-height floor (anti-"midget") ──────────────────────
+        # Feet are pinned FEET_DROP_FACES below the bottom, so the crown lands
+        # at  (figure_h × scale − FEET_DROP × face_px)  above the bottom. A
+        # SHORT figure clears too little of the canvas at the equal-face scale
+        # and reads as a small body with a big head. If its crown would fall
+        # below MIN_FIGURE_CANVAS_FRAC of the canvas, scale that character UP
+        # (face exceeds the equal target — a deliberate trade) so its crown
+        # reaches the floor and it fills the frame like the taller cast.
+        fig_h = union[3] - union[1]
+        crown_frac = (fig_h * scale - FEET_DROP_FACES * face_px) / H0
+        if crown_frac < MIN_FIGURE_CANVAS_FRAC and fig_h > 1:
+            scale = (MIN_FIGURE_CANVAS_FRAC * H0 + FEET_DROP_FACES * face_px) / fig_h
+            print(f"  [cast] {key}: short figure ({crown_frac:.0%} crown) boosted "
+                  f"to the {MIN_FIGURE_CANVAS_FRAC:.0%} min-height floor")
         # Canvas WIDTH grows to fit the scaled figure (wide poses — drill hair,
         # full skirts — must never hit the vertical edges; a hard clip line
         # mid-screen looks broken). Heights stay uniform across the cast, which

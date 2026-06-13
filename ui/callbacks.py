@@ -4,6 +4,7 @@ Built by make_callbacks(bg_provider), closing over the background provider.
 from __future__ import annotations
 import os
 import time
+import traceback
 
 import gradio as gr
 
@@ -250,6 +251,7 @@ def make_callbacks(bg_provider: BackgroundProvider):
 
         # Bake expressions for all characters (UNET still hot from base gen)
         members = []
+        bake_warnings: list[str] = []
         for i, (skey, spreset) in enumerate(specs):
             sname = spreset.get("name", skey)
             yield _loading_step(f"Baking expressions — {sname}…",
@@ -266,6 +268,7 @@ def make_callbacks(bg_provider: BackgroundProvider):
                 # Fall back to placeholder
                 from cast_pipeline import _placeholder_member
                 members.append(_placeholder_member(skey, spreset))
+                bake_warnings.append(sname)
 
         cast = {m.character.name: m for m in members}
         if not cast:
@@ -273,8 +276,11 @@ def make_callbacks(bg_provider: BackgroundProvider):
             return
 
         # VRAM swap: unload ComfyUI, load LLM
-        yield _loading_step("Waking the narrator…",
-                            "loading the story model", "Loading story model…")
+        narrator_sub = "loading the story model"
+        if bake_warnings:
+            names_str = ", ".join(bake_warnings)
+            narrator_sub = f"loading the story model (couldn't draw {names_str} — using a placeholder)"
+        yield _loading_step("Waking the narrator…", narrator_sub, "Loading story model…")
         comfy_free_vram()
         ensure_llm(ModelConfig.from_env(), timeout=300)
 
@@ -388,41 +394,51 @@ def make_callbacks(bg_provider: BackgroundProvider):
         # The model sees the tail of the session log so it knows what the
         # player has already read — the fix for re-describing every turn.
         history = build_recent_history(prev_log)
-        for raw, scene in engine.run_turn_stream(choice_text or choice_id,
-                                                 history=history):
-            beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg,
-                                   init_present=pre_present,
-                                   voice_line=engine.last_voice)
-            if not shown and beats:
-                # First beat ready → render it now. streaming=True so if the
-                # reader is already at the last beat produced so far, the screen
-                # shows the ✦ loader instead of choices until the model finishes.
-                log = _append_log(prev_log, scene.player_name,
-                                  choice_text or "", clean_narration(raw))
-                screen, new_prev_bg, voice_path = _render_beats_screen(
-                    beats, 0, scene, bg_provider, prev_bg, log_text=log,
-                    streaming=True)
-                shown = True
-                yield (scene, engine, screen, scene.cast,
-                       _cast_panel_html(scene.cast), log, info(),
-                       voice_path, new_prev_bg, beats, 0, True)
-            else:
-                # Keep the displayed beat; just grow the buffered beat list so
-                # click-to-advance has the later beats ready. turn_streaming
-                # stays True so on_advance withholds choices at the buffer end.
-                yield (scene, gr.skip(), gr.skip(), gr.skip(), gr.skip(),
-                       gr.skip(), gr.skip(), gr.skip(), gr.skip(), beats,
-                       gr.skip(), True)
+        try:
+            for raw, scene in engine.run_turn_stream(choice_text or choice_id,
+                                                     history=history):
+                beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg,
+                                       init_present=pre_present,
+                                       voice_line=engine.last_voice)
+                if not shown and beats:
+                    # First beat ready → render it now. streaming=True so if the
+                    # reader is already at the last beat produced so far, the screen
+                    # shows the ✦ loader instead of choices until the model finishes.
+                    log = _append_log(prev_log, scene.player_name,
+                                      choice_text or "", clean_narration(raw))
+                    screen, new_prev_bg, voice_path = _render_beats_screen(
+                        beats, 0, scene, bg_provider, prev_bg, log_text=log,
+                        streaming=True)
+                    shown = True
+                    yield (scene, engine, screen, scene.cast,
+                           _cast_panel_html(scene.cast), log, info(),
+                           voice_path, new_prev_bg, beats, 0, True)
+                else:
+                    # Keep the displayed beat; just grow the buffered beat list so
+                    # click-to-advance has the later beats ready. turn_streaming
+                    # stays True so on_advance withholds choices at the buffer end.
+                    yield (scene, gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+                           gr.skip(), gr.skip(), gr.skip(), gr.skip(), beats,
+                           gr.skip(), True)
 
-        # Final: the model has stopped writing. Publish the complete beat list,
-        # the full session-log entry, and turn_streaming=False so the reader's
-        # next advance reveals the choices. Do NOT re-render vn_screen here —
-        # that would yank the reader back to beat 0 if they advanced mid-stream;
-        # on_advance re-renders (now non-streaming) on their next click.
-        log = _append_log(prev_log, scene.player_name,
-                          choice_text or "", clean_narration(raw))
-        yield (scene, gr.skip(), gr.skip(), gr.skip(), gr.skip(),
-               log, info(), gr.skip(), gr.skip(), beats, gr.skip(), False)
+            # Final: the model has stopped writing. Publish the complete beat list,
+            # the full session-log entry, and turn_streaming=False so the reader's
+            # next advance reveals the choices. Do NOT re-render vn_screen here —
+            # that would yank the reader back to beat 0 if they advanced mid-stream;
+            # on_advance re-renders (now non-streaming) on their next click.
+            log = _append_log(prev_log, scene.player_name,
+                              choice_text or "", clean_narration(raw))
+            yield (scene, gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+                   log, info(), gr.skip(), gr.skip(), beats, gr.skip(), False)
+        except Exception:
+            print(f"[on_choice] Turn generation failed:\n{traceback.format_exc()}")
+            error_screen = _loading_screen_html(
+                "⚠ The story stalled — try again",
+                "something went wrong during this turn")
+            yield (scene, engine, error_screen, scene.cast,
+                   _cast_panel_html(scene.cast), prev_log,
+                   f"Turn {scene.turn} · {scene.background} ({scene.mood})",
+                   None, prev_bg, beats, 0, False)
 
     def on_save(slot: float, save_name: str, log_text: str,
                 scene: SceneState, engine):
@@ -520,8 +536,18 @@ def make_callbacks(bg_provider: BackgroundProvider):
             yield tuple(gr.skip() for _ in range(13))
             return
         # Stream through on_choice, clearing free_input on every yield.
-        for out in on_choice("__free__", text.strip(), scene, engine, prev_bg, prev_log):
-            yield (*out, "")
+        try:
+            for out in on_choice("__free__", text.strip(), scene, engine, prev_bg, prev_log):
+                yield (*out, "")
+        except Exception:
+            print(f"[on_free_submit] Turn generation failed:\n{traceback.format_exc()}")
+            error_screen = _loading_screen_html(
+                "⚠ The story stalled — try again",
+                "something went wrong during this turn")
+            yield (scene, engine, error_screen, scene.cast,
+                   _cast_panel_html(scene.cast), prev_log,
+                   f"Turn {scene.turn} · {scene.background} ({scene.mood})",
+                   None, prev_bg, [], 0, False, "")
 
     def on_reset():
         return _empty()
