@@ -1247,6 +1247,21 @@ body.menu-load-active .vn-menu-load {
   margin-top: 4px;
 }
 .vn-cs-desc p { margin: 6px 0; }
+/* ZeroGPU "generated cast is a preview here" callout — warm accent box,
+   shown only on the in-process Space (see screens._zerogpu_mock_notice). */
+.vn-cs-notice {
+  margin: 2px 0 10px;
+  background: rgba(232,168,124,0.08);
+  border: 1px solid var(--border-accent);
+  border-radius: 4px;
+  padding: 9px 13px;
+  font-family: var(--font-ui);
+  font-size: clamp(0.72rem, 0.95cqw, 0.98rem);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  text-align: left;
+}
+.vn-cs-notice strong { color: var(--text-accent); }
 .vn-cs-desc code {
   background: rgba(232,168,124,0.1);
   color: var(--text-accent);

@@ -295,6 +295,49 @@ def _hf_generate(messages: list[dict], max_new_tokens: int,
                       skip_special_tokens=True)
 
 
+def _hf_generate_worker(model, gen_kwargs):
+    """Run model.generate in a background thread (feeds a TextIteratorStreamer).
+    Kept module-level so the @spaces.GPU generator below can spawn it."""
+    import torch
+    with torch.inference_mode():
+        model.generate(**gen_kwargs)
+
+
+@_gpu_decorator
+def _hf_stream_generate(messages: list[dict], max_new_tokens: int,
+                        temperature: float):
+    """Yield text deltas token-by-token. The whole iteration runs inside ONE
+    @spaces.GPU allocation (ZeroGPU holds the GPU for a generator's lifetime),
+    so generate() in the worker thread and our decoding overlap — the engine's
+    line-buffered stream parser turns the deltas into live beats. The previous
+    behaviour (base ModelClient.stream → one giant chunk at the end) made every
+    ZeroGPU turn feel like a long stall; this restores local-style streaming."""
+    import torch  # noqa: F401  (ensures torch is importable before generate)
+    from threading import Thread
+    from transformers import TextIteratorStreamer
+    tok, model = _HF_STATE["tokenizer"], _HF_STATE["model"]
+    inputs = tok.apply_chat_template(
+        messages, add_generation_prompt=True,
+        return_tensors="pt", return_dict=True,
+    ).to(model.device)
+    streamer = TextIteratorStreamer(tok, skip_prompt=True,
+                                    skip_special_tokens=True)
+    gen_kwargs = dict(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=temperature > 0,
+        temperature=max(temperature, 1e-3),
+        top_p=0.95,
+        streamer=streamer,
+    )
+    thread = Thread(target=_hf_generate_worker, args=(model, gen_kwargs))
+    thread.start()
+    for delta in streamer:
+        if delta:
+            yield delta
+    thread.join()
+
+
 class TransformersClient(ModelClient):
     """In-process HF transformers chat model (the ZeroGPU path)."""
 
@@ -311,6 +354,17 @@ class TransformersClient(ModelClient):
             temperature=kw.get("temperature", self.cfg.temperature),
         )
         return {"role": "assistant", "content": text}
+
+    def stream(self, messages, tools=None, **kw) -> Iterator[str]:
+        """Token-by-token streaming (overrides the base one-chunk fallback).
+        Used by the engine's run_turn_stream for every interactive turn."""
+        if not self.health():
+            raise RuntimeError("transformers backend has no loaded model")
+        yield from _hf_stream_generate(
+            messages,
+            max_new_tokens=kw.get("max_tokens", self.cfg.max_tokens),
+            temperature=kw.get("temperature", self.cfg.temperature),
+        )
 
     def health(self) -> bool:
         return _HF_STATE["model"] is not None

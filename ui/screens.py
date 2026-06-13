@@ -3,11 +3,32 @@ and the main scene screen.
 """
 from __future__ import annotations
 import html as _html
+import os
 
 from vn_contracts import CastMember, Choice
 from vn_engine import list_saves
 
 from .media import data_uri, thumb_data_uri
+
+
+def _zerogpu_mock_notice() -> str:
+    """On the ZeroGPU Space (in-process transformers backend, no image stack)
+    the generated cast can't run — on_start falls back to the curated cast.
+    Surface that up front so users know the generated flow is a preview here
+    and that real character generation needs a local run. Returns "" anywhere
+    else (local, or the Docker T4 Space where ComfyUI is present)."""
+    on_zerogpu = (bool(os.getenv("SPACE_ID"))
+                  and os.getenv("ARS_FABULA_BACKEND", "server").lower()
+                  == "transformers")
+    if not on_zerogpu:
+        return ""
+    return (
+        '<div class="vn-cs-notice">⚠ <strong>Preview only on this hosted demo.</strong> '
+        'Character generation needs an image backend (ComfyUI) that isn\'t '
+        'available here, so the <strong>curated cast</strong> stands in for the '
+        'generated one. For real custom generation, run the project locally — '
+        'see the Space README.</div>'
+    )
 
 
 def _slot_rows_html(selectable_empty: bool = True) -> str:
@@ -55,6 +76,7 @@ def _title_screen_html() -> str:
     has_saves = any(not m.get("empty") for m in list_saves())
     load_btn = ('<button class="vn-title-load">Load</button>' if has_saves
                 else '<button class="vn-title-load disabled" disabled>Load</button>')
+    mock_notice = _zerogpu_mock_notice()
     return f"""
     <div class="vn-screen vn-title-screen">
         <div class="vn-title-content">
@@ -80,6 +102,7 @@ def _title_screen_html() -> str:
         <div class="vn-cast-setup">
             <div class="vn-cs-header">
                 <div class="vn-cs-title">Cast Setup</div>
+                {mock_notice}
                 <div class="vn-cs-desc">
                     <p>Leave every card blank to generate the default cast
                     (Yuki, Marie, Sakura). Otherwise fill <strong>Name + Concept</strong>
