@@ -38,8 +38,11 @@ class CastMember:
     """
     character: Character
     expression_map: dict[str, str] = field(default_factory=dict)
-    sprite_width: int = 512
-    sprite_height: int = 768
+    # Placeholder-only nominal canvas (real sprites are read from disk). Kept in
+    # step with the bake: H0 = base 896 × SPRITE_CANVAS_MULT 1.4 ≈ 1254 tall, and
+    # a representative widened canvas ≈ 720 wide (cast_pipeline._frame_upper_body).
+    sprite_width: int = 720
+    sprite_height: int = 1254
 
     def get_sprite(self, expression: str) -> Optional[str]:
         """Get the sprite path for a given expression. Falls back to neutral."""

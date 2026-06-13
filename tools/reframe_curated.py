@@ -35,7 +35,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cast_pipeline import (FACE_TARGET_FRAC, FEET_DROP_FACES, UI_SPRITE_FRAC,
-                           STANDARD_EXPRESSIONS)
+                           MIN_FIGURE_CANVAS_FRAC, STANDARD_EXPRESSIONS)
 
 # Background threshold for the base render ("white background" style tag):
 # a pixel is background if every channel exceeds this.
@@ -120,6 +120,14 @@ def reframe_char(char_dir: str, key: str) -> bool:
     H0 = sH                                            # keep cast-uniform height
     face_px = H0 * FACE_TARGET_FRAC / UI_SPRITE_FRAC   # target face on canvas
     rescale = face_px / face_h_sprite
+    # Min-figure-height floor (anti-"midget"): boost short figures up to the
+    # MIN_FIGURE_CANVAS_FRAC crown floor — identical to cast_pipeline._frame_upper_body.
+    fig_h_sprite = union[3] - union[1]
+    crown_frac = (fig_h_sprite * rescale - FEET_DROP_FACES * face_px) / H0
+    if crown_frac < MIN_FIGURE_CANVAS_FRAC and fig_h_sprite > 1:
+        rescale = (MIN_FIGURE_CANVAS_FRAC * H0 + FEET_DROP_FACES * face_px) / fig_h_sprite
+        print(f"  [{key}] short figure ({crown_frac:.0%} crown) boosted to "
+              f"the {MIN_FIGURE_CANVAS_FRAC:.0%} min-height floor")
     pad = 12
     fig_w = (union[2] - union[0]) * rescale
     W0 = max(sW, int(fig_w) + 1 + 2 * pad)             # widen to fit, never clip
