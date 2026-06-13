@@ -294,6 +294,14 @@ if __name__ == "__main__":
             primary_hue="amber",
             neutral_hue="slate",
         ),
+        # CSR, never SSR. Gradio's CSS auto-prefixer boosts every custom rule's
+        # specificity with a `.gradio-container…contain` prefix ONLY in CSR; in
+        # SSR (which HF Spaces enables by default) that prefix is absent, so the
+        # app's own selectors (e.g. .vn-title-main) lose the cascade to Gradio's
+        # component CSS (.prose *, button) and every gold accent silently drops
+        # to the neutral theme colour. Forcing CSR makes the Space render
+        # identically to local. Harmless locally (local already runs CSR).
+        ssr_mode=False,
         quiet=False,
         share=False,
     )
