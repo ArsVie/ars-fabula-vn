@@ -104,7 +104,7 @@ def _title_screen_html() -> str:
                         <div class="vn-cs-field vn-cs-field-concept">
                             <label>Concept</label>
                             <input class="vn-cs-input vn-cs-concept" data-cs-field="concept" data-cs-idx="0"
-                                   placeholder="e.g. shy bookworm childhood friend" maxlength="64">
+                                   placeholder="e.g. shy bookworm childhood friend" maxlength="512">
                         </div>
                     </div>
                     <div class="vn-cs-tags-row">
@@ -122,7 +122,7 @@ def _title_screen_html() -> str:
                         <div class="vn-cs-field vn-cs-field-concept">
                             <label>Concept</label>
                             <input class="vn-cs-input vn-cs-concept" data-cs-field="concept" data-cs-idx="1"
-                                   placeholder="e.g. tsundere rival" maxlength="64">
+                                   placeholder="e.g. tsundere rival" maxlength="512">
                         </div>
                     </div>
                     <div class="vn-cs-tags-row">
@@ -140,7 +140,7 @@ def _title_screen_html() -> str:
                         <div class="vn-cs-field vn-cs-field-concept">
                             <label>Concept</label>
                             <input class="vn-cs-input vn-cs-concept" data-cs-field="concept" data-cs-idx="2"
-                                   placeholder="e.g. mysterious senpai" maxlength="64">
+                                   placeholder="e.g. mysterious senpai" maxlength="512">
                         </div>
                     </div>
                     <div class="vn-cs-tags-row">
@@ -415,8 +415,15 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
 
 def _casting_screen_html(char_keys: list[str],
                          resolved: dict[str, CastMember],
-                         message: str = "Assembling your cast…") -> str:
-    """The casting-beat screen: portraits resolve one by one."""
+                         message: str = "Assembling your cast…",
+                         sub: str = "") -> str:
+    """The casting-beat screen: portraits resolve one by one.
+
+    `sub` adds a secondary status line under the portraits (same voice as the
+    ✦ loading screen's sub-text). It lets this ONE screen carry the whole
+    cast→opening-scene wait — cards stay visible while the ✦ pulses and the
+    sub-line narrates — instead of swapping to a separate loading screen.
+    """
     portraits = []
     for key in char_keys:
         # Preset keys are lowercase slugs; custom names arrive display-ready
@@ -438,11 +445,13 @@ def _casting_screen_html(char_keys: list[str],
                 f'<div class="pname pending">?</div></div>'
             )
 
+    sub_html = f'<div class="vn-loading-sub">{sub}</div>' if sub else ""
     return f"""
     <div class="vn-screen">
         <div class="vn-casting">
             <div class="casting-title">✦ {message}</div>
             <div class="portraits">{''.join(portraits)}</div>
+            {sub_html}
         </div>
     </div>
     """

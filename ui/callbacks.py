@@ -130,11 +130,14 @@ def make_callbacks(bg_provider: BackgroundProvider):
             yield (*_empty(), None)
             return
 
-        # Open the scene — pulse the loader while the model writes the
-        # opening turn (same waiting vocabulary as every other generation).
+        # Open the scene — keep the SAME casting screen (portraits resolved)
+        # as the single waiting surface: the ✦ pulse + sub-line carry the
+        # "narrator waking" beat, so the reader never sees a second, different
+        # loader swap in (issue #8 — one vocabulary, not two).
         yield (None, None,
-               _loading_screen_html("The story begins…",
-                                    "the narrator is setting the scene"),
+               _casting_screen_html(char_keys, resolved,
+                                    "The story begins…",
+                                    sub="the narrator is setting the scene"),
                cast, _cast_panel_html(cast), "", "Opening scene…",
                None, "", [], 0, None)
         scene = SceneState(

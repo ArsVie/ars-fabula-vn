@@ -121,12 +121,17 @@ body.cast-setup-active .vn-cast-setup {
   display: flex;
   justify-content: center;
   align-items: flex-end;     /* feet on the screen bottom */
-  gap: 24px;
+  gap: 2.4cqw;               /* scales with the canvas, not the page */
   pointer-events: none;
   z-index: 2;
 }
 .vn-sprite {
-  height: 86%;               /* heads near the top, torso behind the box */
+  /* Sized against the canvas WIDTH (cqw), the stable axis: the sprite is
+     locked to the canvas's proportions and never changes on browser zoom or
+     when min-height inflates the box past 16:9. 48cqw ≈ 86% of a true 16:9
+     canvas's height; max-height caps it if the box is ever taller than 16:9. */
+  height: 48cqw;
+  max-height: 86%;
   width: auto;
   max-width: 34%;            /* must exceed the widest bake canvas's display
                                 width — if this cap binds, object-fit:contain
