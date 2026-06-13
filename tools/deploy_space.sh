@@ -31,6 +31,17 @@ hf upload "$SPACE_ID" . . --type space \
   --exclude "logs/*" \
   --exclude "saves/*" \
   --exclude "tests/*" \
+  --exclude "runs/*" \
+  --exclude "data/*" \
+  --exclude "tools/_*" \
+  --exclude "tools/modal_train.py" \
+  --exclude "tools/transform_vn_dataset.py" \
+  --exclude "tools/merge_train_data.py" \
+  --exclude "tools/eval_generations.py" \
+  --exclude "tools/build_sft_dataset.py" \
+  --exclude "CLAUDE.md" \
+  --exclude "FIELD_NOTES.md" \
+  --exclude "next_session.md" \
   --exclude "_gen_sprites.py" \
   --exclude "static/sprites/_sampler_test/*" \
   --exclude "static/sprites/generated/*" \

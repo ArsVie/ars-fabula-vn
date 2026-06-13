@@ -105,6 +105,7 @@ ENV ARS_FABULA_BACKEND=server \
     ARS_FABULA_LLAMA_BIN=/usr/local/bin/llama-server \
     ARS_FABULA_LLAMA_MODEL=/app/models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
     ARS_FABULA_LLAMA_DRAFTER=/app/models/MTP/gemma-4-26B-A4B-it-Q8_0-MTP.gguf \
+    ARS_FABULA_TRACE=0 \
     GRADIO_SERVER_PORT=7860
 
 USER user
