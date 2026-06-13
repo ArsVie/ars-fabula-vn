@@ -38,3 +38,13 @@ cast_report.md
 *:Avecto.Zone.Identifier
 *.bak
 data/
+
+# Local dev artifacts (not for Space deployment)
+.venv-convert/
+runs/
+next_session.md
+CLAUDE.md
+FIELD_NOTES.md
+tools/_*.sh
+tools/_*.py
+tools/ab_local_eval.py

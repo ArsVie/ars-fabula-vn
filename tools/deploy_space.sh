@@ -43,6 +43,7 @@ hf upload "$SPACE_ID" . . --type space \
   "${EXTRA_EXCLUDES[@]}" \
   --exclude ".git/*" \
   --exclude ".venv/*" \
+  --exclude ".venv-convert/*" \
   --exclude "**/__pycache__/*" \
   --exclude ".agents/*" \
   --exclude ".claude/*" \
@@ -57,6 +58,7 @@ hf upload "$SPACE_ID" . . --type space \
   --exclude "tools/merge_train_data.py" \
   --exclude "tools/eval_generations.py" \
   --exclude "tools/build_sft_dataset.py" \
+  --exclude "tools/ab_local_eval.py" \
   --exclude "CLAUDE.md" \
   --exclude "FIELD_NOTES.md" \
   --exclude "next_session.md" \
