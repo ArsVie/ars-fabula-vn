@@ -244,6 +244,20 @@ body.cast-setup-active .vn-cast-setup {
 }
 @keyframes vnPulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
 
+/* Streaming loader — shown when the reader has caught up to the last beat the
+   model has produced but the turn is still being written. Same ✦ pulse as the
+   turn-pending indicator (body.vn-waiting), so "still generating" reads
+   consistently whether a turn was just submitted or is mid-stream. */
+.vn-streaming-wait {
+  position: absolute;
+  right: 18px; bottom: 14px;
+  color: var(--text-accent);
+  font-size: 1.05rem;
+  z-index: 30;
+  animation: vnPulse 1.2s ease infinite;
+  pointer-events: none;
+}
+
 /* ── Choices ── (raised so the free-text bar docks directly beneath them
    in the same centered column — one interaction cluster, not two) */
 /* Independent vertical column, centered in the open scene area ABOVE the
@@ -329,6 +343,36 @@ body.cast-setup-active .vn-cast-setup {
   padding: 0 1.1em;
 }
 .vn-free-go:hover { color: #fff; }
+
+/* ── Generation-wait screen ── the app's single waiting vocabulary: every
+   phase that blocks on generation (sprite bake, VRAM swap, opening turn)
+   shows this centered ✦ pulse — the same star that marks turn/stream waits. */
+.vn-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 14px;
+  background: radial-gradient(ellipse at center, #1c1c38 0%, var(--bg-screen) 70%);
+}
+.vn-loading-star {
+  color: var(--text-accent);
+  font-size: 2.2rem;
+  animation: vnPulse 1.2s ease infinite;
+}
+.vn-loading-msg {
+  font-family: var(--font-display);
+  color: var(--text-accent);
+  font-size: 1.1rem;
+  letter-spacing: 0.15em;
+}
+.vn-loading-sub {
+  font-family: var(--font-ui);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+}
 
 /* ── Casting beat ── */
 .vn-casting {
@@ -489,6 +533,12 @@ body.cast-setup-active .vn-cast-setup {
   border-color: var(--border-accent) !important;
   outline: none !important;
   box-shadow: 0 0 0 2px var(--border-glow) !important;
+}
+/* The editable personality keeps the old read-only paragraph's voice
+   (italic, secondary) so the screen still reads the same at a glance. */
+.review-prompt.review-desc-edit {
+  font-style: italic;
+  color: var(--text-secondary) !important;
 }
 .review-actions {
   display: flex;
@@ -799,22 +849,29 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
    across the page each turn). visibility doesn't depend on overflow clipping
    or compositor timing, so a closed panel can never paint. The 0s visibility
    transition is DELAYED by the slide duration on close (so the slide-out
-   stays visible) and instant on open. */
+   stays visible) and instant on open.
+
+   Transitions are gated behind .vn-anim, which ONLY the user-toggle JS adds
+   (togglePanel / close / Escape). Render-restoration (restoreUiState after a
+   canvas swap re-applies .open to the freshly inserted panel) must SNAP to
+   its state — otherwise every turn render replays the slide-in, dragging the
+   dark sheet across the scene. */
 .vn-panel-log {
   bottom: 0; left: 0; right: 0;
   height: 55%;
   border-top: 1px solid var(--border-mid);
   transform: translateY(102%);
   visibility: hidden;
-  transition: transform 0.3s ease, visibility 0s linear 0.3s;
+  transition: none;
   overflow-y: auto;
   padding: 18px 28px;
 }
+.vn-panel-log.vn-anim { transition: transform 0.3s ease, visibility 0s linear 0.3s; }
 .vn-panel-log.open {
   transform: translateY(0);
   visibility: visible;
-  transition: transform 0.3s ease, visibility 0s;
 }
+.vn-panel-log.open.vn-anim { transition: transform 0.3s ease, visibility 0s; }
 .vn-log-text {
   font-family: var(--font-dialogue);
   font-style: italic;
@@ -837,15 +894,16 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   border-left: 1px solid var(--border-mid);
   transform: translateX(102%);
   visibility: hidden;            /* unpaintable when closed — see log panel note */
-  transition: transform 0.3s ease, visibility 0s linear 0.3s;
+  transition: none;              /* animates only on user toggle (.vn-anim) */
   overflow-y: auto;
   padding: 18px 16px;
 }
+.vn-panel-cast.vn-anim { transition: transform 0.3s ease, visibility 0s linear 0.3s; }
 .vn-panel-cast.open {
   transform: translateX(0);
   visibility: visible;
-  transition: transform 0.3s ease, visibility 0s;
 }
+.vn-panel-cast.open.vn-anim { transition: transform 0.3s ease, visibility 0s; }
 .cast-panel-card {
   display: flex;
   gap: 14px;
@@ -890,7 +948,7 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   opacity: 0;
   visibility: hidden;            /* unpaintable when closed — see log panel note */
   pointer-events: none;
-  transition: opacity 0.2s, transform 0.2s, visibility 0s linear 0.2s;
+  transition: none;              /* animates only on user toggle (.vn-anim) */
   width: clamp(380px, 34cqw, 560px);
   max-height: 86%;
   overflow-y: auto;
@@ -899,13 +957,14 @@ h1, h2, h3 { font-family: var(--font-display) !important; color: var(--text-acce
   padding: 22px 24px;
   box-shadow: 0 8px 60px rgba(0,0,0,0.6);
 }
+.vn-panel-save.vn-anim { transition: opacity 0.2s, transform 0.2s, visibility 0s linear 0.2s; }
 .vn-panel-save.open {
   opacity: 1;
   transform: translate(-50%, -50%) scale(1);
   visibility: visible;
   pointer-events: auto;
-  transition: opacity 0.2s, transform 0.2s, visibility 0s;
 }
+.vn-panel-save.open.vn-anim { transition: opacity 0.2s, transform 0.2s, visibility 0s; }
 /* Rich slot rows — one full-width card per slot: name, chapter · turn,
    cast names, timestamp. Shared by the save panel and the menu load list. */
 .vn-slot-list {
@@ -1399,21 +1458,60 @@ body.menu-load-active .vn-menu-load {
 
 /* ── Turn-pending indicator ── replaces Gradio's overlay as the "thinking"
    feedback: JS adds body.vn-waiting when a choice / free-text is submitted
-   and removes it when the next screen render lands. The choice column dims
-   and locks (no double submits) and a pulsing ✦ marks the wait.
+   and removes it when the next screen render lands. The unpicked choices dim
+   and the whole column locks (no double submits); the PICKED one (JS tags it
+   .vn-chosen) stays lit and blips so you can see what you committed to. A
+   pulsing ✦ inside the text box marks the wait — the same spot the
+   streaming loader and the ▼ continue hint use.
    !important is load-bearing twice over: it beats the PREFIXED copies of the
    base rules (the body.…-keyed prefixed twins never match) AND the lingering
    fill-mode opacity of the vnChoicesIn animation. */
-body.vn-waiting .vn-choices { opacity: 0.35 !important; }
+body.vn-waiting .vn-choices .vn-choice-btn:not(.vn-chosen),
+body.vn-waiting .vn-free-capsule:not(.vn-chosen) { opacity: 0.35 !important; }
+body.vn-waiting .vn-choices .vn-choice-btn.vn-chosen,
+body.vn-waiting .vn-free-capsule.vn-chosen {
+  opacity: 1 !important;
+  animation: vnPulse 1.2s ease infinite;
+}
 body.vn-waiting .vn-choices .vn-choice-btn,
 body.vn-waiting .vn-free-capsule { pointer-events: none !important; }
-body.vn-waiting .vn-screen::after {
+body.vn-waiting .vn-dialogue::after {
   content: '✦';
   position: absolute;
   right: 18px; bottom: 14px;
   color: var(--text-accent);
   font-size: 1.05rem;
   z-index: 30;
+  animation: vnPulse 1.2s ease infinite;
+}
+
+/* Waiting from the TITLE screen (Generate Cast, curated Start, menu Load):
+   there is no text box to host the ✦, and the menu must not stay clickable
+   while generation spins up — lock it, dim it, and pulse a big centered ✦
+   the user can't miss. */
+body.vn-waiting .vn-title-screen { pointer-events: none !important; }
+/* ::before is a static near-opaque scrim that hides the menu beneath — the
+   screen visibly leaves its interactive state the moment the wait starts.
+   (A child-dimming opacity rule was tried first but Gradio's style pipeline
+   wouldn't let a stylesheet !important opacity land on these nodes; the
+   scrim is sturdier anyway.) ::after is the pulsing ✦ on top of it. */
+body.vn-waiting .vn-title-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 13, 26, 0.86);
+  z-index: 40;
+}
+body.vn-waiting .vn-title-screen::after {
+  content: '✦';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-accent);
+  font-size: 2.2rem;
+  z-index: 41;
   animation: vnPulse 1.2s ease infinite;
 }
 
@@ -1524,8 +1622,12 @@ const _typewriterObserver = new MutationObserver(function() {
     }
     // A title-screen render also ends any pending wait (e.g. a menu load
     // that failed back to the title — it has no data-typing attribute).
-    if (screen && screen.classList.contains('vn-title-screen')
-        && document.body.classList.contains('vn-waiting')) {
+    // Same for the casting/loading/review screens: they ARE the response to
+    // the click that armed the wait, and they carry their own ✦ pulse.
+    if (screen && document.body.classList.contains('vn-waiting')
+        && (screen.classList.contains('vn-title-screen')
+            || screen.classList.contains('vn-casting-review')
+            || screen.querySelector('.vn-loading, .vn-casting'))) {
         setWaiting(false);
     }
     restoreUiState();
@@ -1613,6 +1715,10 @@ const submitFreeText = (input) => {
     const val = ((input && input.value) || '').trim();
     if (!val) return;
     setBoxValue('free-input', val);
+    // Mark the capsule as the committed pick — it stays lit and blips while
+    // the unpicked choices dim (body.vn-waiting rules).
+    const cap = input && input.closest('.vn-free-capsule');
+    if (cap) cap.classList.add('vn-chosen');
     setWaiting(true);
     setTimeout(() => clickHidden('#free-submit-btn'), 120);
 };
@@ -1637,6 +1743,8 @@ document.addEventListener('click', function(e) {
         setBoxValue('choice-id-box', id);
         setBoxValue('choice-text-box', text);
 
+        // The committed pick stays lit and blips; its siblings dim.
+        btn.classList.add('vn-chosen');
         setWaiting(true);
         setTimeout(() => clickHidden('#submit-choice-btn'), 150);
         return;
@@ -1758,8 +1866,20 @@ function syncSlotRows() {
     }
 }
 
+// Arm the slide/fade transition on the CURRENT panel nodes. Only the
+// user-toggle paths call this — render-restoration leaves panels without
+// .vn-anim so a fresh canvas snaps to its remembered state instead of
+// replaying the slide across the scene (the "log sheet clips over the
+// scene after a choice" bug).
+function animatePanels() {
+    document.querySelectorAll('.vn-screen .vn-panel').forEach(function(p) {
+        p.classList.add('vn-anim');
+    });
+}
+
 function togglePanel(panelClass) {
     window._vnUi.panel = (window._vnUi.panel === panelClass) ? null : panelClass;
+    animatePanels();
     restoreUiState();
 }
 
@@ -1788,6 +1908,9 @@ document.addEventListener('click', function(e) {
             // own button. (Curated has no setup — start immediately.)
             document.body.classList.add('cast-setup-active');
         } else {
+            // Curated start runs the casting beat + opening turn — pulse ✦
+            // until the first render lands.
+            setWaiting(true);
             // 150ms lets the preset input event reach the server first
             setTimeout(function() { clickHidden('#start-btn-hidden'); }, 150);
         }
@@ -1818,8 +1941,10 @@ document.addEventListener('click', function(e) {
                 hiddenFast.dispatchEvent(new Event('change', { bubbles: true }));
             }
         }
-        // Hide cast setup, reveal the canvas
+        // Hide cast setup, reveal the canvas — pulse ✦ until the casting
+        // screen render arrives.
         document.body.classList.remove('cast-setup-active');
+        setWaiting(true);
         // Fire the hidden Generate Cast button with a small delay for input propagation
         setTimeout(function() { clickHidden('#generate-cast-btn'); }, 150);
         return;
@@ -1862,6 +1987,7 @@ document.addEventListener('click', function(e) {
     if (close) {
         e.preventDefault();
         window._vnUi.panel = null;
+        animatePanels();
         restoreUiState();
         return;
     }
@@ -1921,7 +2047,14 @@ document.addEventListener('click', function(e) {
         e.preventDefault();
         const promptEl = document.querySelector('#review-prompt-text');
         if (promptEl) setHiddenVal('#casting-prompt-box', promptEl.value);
-        clickHidden(reviewConfirm ? '#casting-confirm-btn' : '#casting-redo-btn');
+        const descEl = document.querySelector('#review-desc-text');
+        if (descEl) setHiddenVal('#casting-desc-box', descEl.value);
+        // Instant ✦ feedback; the server's own loading screen takes over
+        // when the callback's first yield lands (observer clears the flag).
+        setWaiting(true);
+        setTimeout(function() {
+            clickHidden(reviewConfirm ? '#casting-confirm-btn' : '#casting-redo-btn');
+        }, 120);
         return;
     }
 
@@ -1931,6 +2064,7 @@ document.addEventListener('click', function(e) {
         && !e.target.closest('.vn-panel')
         && !e.target.closest('.vn-icon-tray')) {
         window._vnUi.panel = null;
+        animatePanels();
         restoreUiState();
     }
 });
@@ -1939,6 +2073,7 @@ document.addEventListener('click', function(e) {
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape' && window._vnUi.panel) {
         window._vnUi.panel = null;
+        animatePanels();
         restoreUiState();
         const trayWrap = document.querySelector('.vn-icon-tray');
         if (trayWrap) trayWrap.classList.remove('confirming');

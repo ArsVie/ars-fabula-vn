@@ -2,6 +2,7 @@
 test_unit.py — Deterministic unit tests for the VN contracts and engine.
 No server needed. Run: pytest -m unit -v
 """
+import json
 import os
 import pytest
 
@@ -228,6 +229,52 @@ class TestToolParsing:
         from vn_engine import _loads_lenient
         data = _loads_lenient('[{id: 1, text: "meet at 3:30 pm: rooftop"}]')
         assert data[0]["text"] == "meet at 3:30 pm: rooftop"
+
+    def test_loads_lenient_strict_json_unchanged(self):
+        """Valid JSON must round-trip through the strict path untouched."""
+        from vn_engine import _loads_lenient
+        blob = '[{"id": "study", "text": "Crack the books", "consequence": "smart"}]'
+        assert _loads_lenient(blob) == json.loads(blob)
+
+    def test_loads_lenient_single_quoted_python_repr(self):
+        """Robustness regression (Gemma 4 26B live output): Python-repr style
+        JSON with single-quoted keys AND values must parse."""
+        from vn_engine import _loads_lenient
+        data = _loads_lenient(
+            "[{'id': 'study', 'text': 'Hit the library', 'consequence': 'focus'}]")
+        assert data == [{"id": "study", "text": "Hit the library",
+                         "consequence": "focus"}]
+
+    def test_loads_lenient_apostrophe_in_single_quoted_value(self):
+        """Apostrophes inside values survive the single-quote repair — naive
+        quote-swapping regexes break on \"I've\"; literal_eval must not."""
+        from vn_engine import _loads_lenient
+        data = _loads_lenient(
+            '[{\'id\': \'study\', \'text\': "I\'ve been meaning to study", '
+            '\'consequence\': "It\'s the smart move"}]')
+        assert data[0]["text"] == "I've been meaning to study"
+        assert data[0]["consequence"] == "It's the smart move"
+
+    def test_loads_lenient_mixed_quoting(self):
+        """A mix of single- and double-quoted strings in one blob parses."""
+        from vn_engine import _loads_lenient
+        data = _loads_lenient(
+            '[{\'id\': "study", "text": \'Library time\', \'consequence\': "calm"}]')
+        assert data == [{"id": "study", "text": "Library time",
+                         "consequence": "calm"}]
+
+    def test_loads_lenient_bare_keys_with_single_quoted_values(self):
+        """Worst case observed: bare keys combined with single-quoted values —
+        needs the key repair followed by the literal_eval pass."""
+        from vn_engine import _loads_lenient
+        data = _loads_lenient("[{id: 'a', text: 'Go'}, {id: 'b', text: 'Stay'}]")
+        assert [c["id"] for c in data] == ["a", "b"]
+
+    def test_loads_lenient_garbage_still_raises(self):
+        """Unrepairable input must still raise JSONDecodeError for callers."""
+        from vn_engine import _loads_lenient
+        with pytest.raises(json.JSONDecodeError):
+            _loads_lenient("[{this is not anything parseable")
 
 
 # ═══════════════════════════════════════════════════════════════════════

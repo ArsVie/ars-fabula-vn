@@ -135,6 +135,81 @@ class TestChoiceFlow:
 # Save/Load: Scene serialization
 # ═══════════════════════════════════════════════════════════════════════
 
+from model_client import MockModel
+
+
+class _StreamMock(MockModel):
+    """MockModel that emits its scripted text as many small deltas — optionally
+    splitting mid-token — to exercise the engine's line-buffered reassembly."""
+
+    def __init__(self, text: str, chunk: int = 5):
+        super().__init__(responses=[text])
+        self._text = text
+        self._chunk = chunk
+
+    def stream(self, messages, tools=None, **kw):
+        self.calls.append({"messages": messages, "tools": tools, "kw": kw})
+        t = self._text
+        for i in range(0, len(t), self._chunk):
+            yield t[i:i + self._chunk]
+
+
+def _fresh_engine(cast, model):
+    from vn_engine import VNEngine
+    from vn_contracts import SceneState
+    scene = SceneState(cast=cast, present=[], background="classroom",
+                       mood="peaceful", turn=0, chapter="Prologue")
+    return VNEngine(model=model, cast=cast, scene=scene)
+
+
+class TestStreaming:
+    SCRIPT = (
+        '[TOOL: set_expression character="Yuki" expression="smile"]\n'
+        '[TOOL: advance_scene description="The sun shines." '
+        'background="classroom" mood="cheerful"]\n\n'
+        '[Yuki]: "Good morning!"\n'
+        'The classroom is quiet.\n'
+    )
+
+    def test_stream_final_matches_blocking(self, cast):
+        """Streaming in tiny deltas must agree with the one-shot path on the
+        final narration and scene mutations, and must yield progressively."""
+        stream_eng = _fresh_engine(cast, _StreamMock(self.SCRIPT, chunk=5))
+        block_eng = _fresh_engine(cast, MockModel(responses=[self.SCRIPT]))
+
+        yields = list(stream_eng.run_turn_stream("hi"))
+        stream_narr, stream_scene = yields[-1]
+        block_narr, block_scene = block_eng.run_turn("hi")
+
+        assert stream_narr == block_narr
+        assert stream_scene.mood == block_scene.mood == "cheerful"
+        assert stream_scene.expressions.get("Yuki") == "smile"
+        assert len(yields) >= 2  # at least one partial + the final
+
+    def test_multiline_tool_call_not_split(self, cast):
+        """A pretty-printed multi-line tool call, streamed in 4-char chunks,
+        must be reassembled into one unit — not split across newlines."""
+        script = (
+            "[TOOL: offer_choices choices='[\n"
+            '  {"id":"a","text":"Talk to Yuki"},\n'
+            '  {"id":"b","text":"Talk to Haruki"}\n'
+            "]']\n"
+        )
+        eng = _fresh_engine(cast, _StreamMock(script, chunk=4))
+        *_, (_narr, scene) = eng.run_turn_stream("choose")
+        assert len(scene.choices) == 2
+        assert scene.choices[0].text == "Talk to Yuki"
+        assert scene.choices[1].text == "Talk to Haruki"
+
+    def test_dialogue_recorded_via_stream(self, cast):
+        """Dialogue lines are recorded into scene state during streaming."""
+        eng = _fresh_engine(cast, _StreamMock(self.SCRIPT, chunk=3))
+        *_, (narr, scene) = eng.run_turn_stream("hi")
+        assert "Good morning" in narr
+        assert any(d["speaker"] == "Yuki" and "Good morning" in d["text"]
+                   for d in scene.dialogue)
+
+
 class TestSaveLoad:
     def test_scene_state_roundtrip(self, scene):
         """Scene state should serialize and deserialize correctly."""

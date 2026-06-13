@@ -13,9 +13,10 @@ Architecture (same pattern as the DM):
   6. Returns (narration, updated_scene)
 """
 from __future__ import annotations
+import ast
 import json
 import re
-from typing import Optional
+from typing import Optional, Iterator
 
 import os
 
@@ -129,6 +130,42 @@ def _scan_balanced(text: str, start: int) -> int:
             if depth == 0:
                 return i + 1
     return -1
+
+
+def _split_complete_lines(buffer: str) -> tuple[list[str], str]:
+    """Cut `buffer` into complete lines on newlines that are NOT inside an
+    open bracket span or a double-quoted string.
+
+    This keeps a multi-line `[TOOL: ... choices=[{...}]]` call (or any bracketed
+    marker the model pretty-prints across lines) intact as one unit, so the
+    line-buffered streaming parser never sees a half a tool call. Brackets and
+    backslash-escaped double quotes are tracked exactly as in parse_tool_calls;
+    single quotes are NOT string delimiters (apostrophes in prose are fine).
+
+    Returns (complete_lines, remainder). `complete_lines` have no trailing '\\n'.
+    """
+    depth = in_str = esc = 0
+    lines: list[str] = []
+    start = 0
+    for i, c in enumerate(buffer):
+        if esc:
+            esc = 0
+        elif c == '\\':
+            esc = 1
+        elif in_str:
+            if c == '"':
+                in_str = 0
+        elif c == '"':
+            in_str = 1
+        elif c in '[{':
+            depth += 1
+        elif c in ']}':
+            if depth > 0:
+                depth -= 1
+        elif c == '\n' and depth == 0:
+            lines.append(buffer[start:i])
+            start = i + 1
+    return lines, buffer[start:]
 
 
 def _parse_tool_args(args_str: str) -> dict:
@@ -439,6 +476,15 @@ def _handle_set_expression(tool_data: dict, scene: SceneState, cast: dict[str, C
             message=f"Expression '{expression}' not available for {canonical}. Available: {list(cast[canonical].expression_map.keys())}",
         )
 
+    if scene.expressions.get(canonical) == expression:
+        # No-op: already showing this expression. Succeed without reporting a
+        # visual change (data carries no "expression" key), so the streaming
+        # loop doesn't count it as an expression change worth voicing.
+        return ActionResult(
+            success=True,
+            message=f"Expression unchanged: {canonical} already {expression}",
+        )
+
     scene.expressions[canonical] = expression
     return ActionResult(
         success=True,
@@ -497,18 +543,38 @@ def _loads_lenient(blob: str):
     """json.loads with a best-effort repair for common model deviations.
 
     Weaker models emit loosely-formatted JSON — most often unquoted object
-    keys (`{id: 1, text: ...}` instead of `{"id": 1, "text": ...}`). Try a
-    strict parse first; on failure, quote bare keys and retry. Raises
-    json.JSONDecodeError if even the repaired form is unparseable.
+    keys (`{id: 1, text: ...}` instead of `{"id": 1, "text": ...}`), or
+    Python-repr style with single-quoted keys/values
+    (`[{'id': 'study', 'text': "I've ..."}]`). Try a strict parse first;
+    on failure, fall back to ast.literal_eval (which handles single quotes —
+    apostrophes inside values included — natively), then quote bare keys and
+    retry both. Raises json.JSONDecodeError if every repair fails.
     """
     try:
         return json.loads(blob)
-    except json.JSONDecodeError:
-        # Quote bare object keys following '{' or ','. The lookbehind anchor
-        # (a brace/comma + optional space) keeps us from touching colons that
-        # live inside string values like "go to the cafe: now".
-        repaired = re.sub(r'([{,]\s*)([A-Za-z_]\w*)(\s*:)', r'\1"\2"\3', blob)
+    except json.JSONDecodeError as err:
+        strict_err = err
+
+    # Python-repr style (single quotes, True/False/None) parses as a literal.
+    try:
+        return ast.literal_eval(blob)
+    except (ValueError, SyntaxError):
+        pass
+
+    # Quote bare object keys following '{' or ','. The lookbehind anchor
+    # (a brace/comma + optional space) keeps us from touching colons that
+    # live inside string values like "go to the cafe: now".
+    repaired = re.sub(r'([{,]\s*)([A-Za-z_]\w*)(\s*:)', r'\1"\2"\3', blob)
+    try:
         return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
+    # Bare keys AND single-quoted values combined: the key repair above makes
+    # it a valid Python literal even though it still isn't strict JSON.
+    try:
+        return ast.literal_eval(repaired)
+    except (ValueError, SyntaxError):
+        raise strict_err
 
 
 def _handle_offer_choices(tool_data: dict, scene: SceneState) -> ActionResult:
@@ -625,28 +691,52 @@ class VNEngine:
         self.voice = voice
         self.last_voice = None  # VoiceLine of the most recent voiced beat (or None)
 
-    def run_turn(self, player_choice_text: str) -> tuple[str, SceneState]:
-        """Run one VN turn.
+    def run_turn(self, player_choice_text: str,
+                 history: str = "") -> tuple[str, SceneState]:
+        """Run one VN turn (blocking).
 
-        1. Build prompt with [STATE] banner + choice text
-        2. Send to model
-        3. Parse tool calls from response
-        4. Route each tool call to mutate scene
-        5. Enforce cast-lock
-        6. Return (narration, updated_scene)
+        Drains run_turn_stream and returns its final (narration, scene). All
+        turn logic lives in the streaming generator; this is the one-shot
+        convenience for callers (and tests) that don't need incremental output.
+
+        Args:
+            player_choice_text: The choice text the player selected.
+            history: Trimmed session-log tail (vn_prompt.build_recent_history)
+                so the model knows what it already narrated.
+
+        Returns:
+            (narration_text, updated_scene_state)
+        """
+        final = (None, self.scene)
+        for final in self.run_turn_stream(player_choice_text, history=history):
+            pass
+        return final
+
+    def run_turn_stream(self, player_choice_text: str, history: str = ""
+                        ) -> Iterator[tuple[str, SceneState]]:
+        """Run one VN turn, streaming line-buffered.
+
+        Streams the model response and processes it ONE COMPLETE LINE AT A
+        TIME (buffering deltas to '\\n' boundaries), so `[TOOL: ...]` calls and
+        `[Name]: "..."` speaker prefixes are never split mid-token. Per line:
+        route tool calls (mutating the scene live), record dialogue, and voice
+        the first eligible emotional beat. Yields (narration_so_far, scene) as
+        lines complete; the FINAL yield equals what run_turn returns — the
+        cleaned narration plus cast-lock / engine notes.
 
         Args:
             player_choice_text: The choice text the player selected.
 
-        Returns:
-            (narration_text, updated_scene_state)
+        Yields:
+            (narration_so_far, updated_scene_state) — last yield is final.
         """
         # 0. The previous turn's choices are consumed by making one
         self.scene.choices = []
 
         # 1. Build prompt
         system, user = build_full_prompt(self.scene, self.cast, player_choice_text,
-                                         player_name=self.scene.player_name)
+                                         player_name=self.scene.player_name,
+                                         history=history)
 
         # Also inject the current scene description for context
         if self.scene.description:
@@ -657,76 +747,38 @@ class VNEngine:
             {"role": "user", "content": user},
         ]
 
-        # 2. Send to model
-        response = self.model.generate(messages) or ""
+        # Per-turn streaming state
+        tool_results: list[ActionResult] = []
+        changed_exprs: set[str] = set()   # characters whose expression changed so far
+        self.last_voice = None
+        voiced = False
 
-        # 3. Cast-lock check — detect violations BEFORE cleaning removes them
-        violations = _find_cast_violations(response, self.cast)
-
-        # Trace the raw prompt→response for fine-tuning (real models only;
-        # mock/scripted output is skipped). Best-effort, never raises.
-        if not getattr(self.model, "is_mock", False):
-            log_turn(
-                messages, response,
-                model=getattr(getattr(self.model, "cfg", None), "model", ""),
-                context={
-                    "turn": self.scene.turn,
-                    "scene": self.scene.description,
-                    "mood": self.scene.mood,
-                    "present": list(self.scene.present),
-                    "player_input": player_choice_text,
-                    "cast_violations": violations,
-                },
-            )
-
-        # 4. Parse tool calls
-        tool_calls = parse_tool_calls(response)
-
-        # 5. Route tool calls (in order)
-        tool_results = []
-        for tc in tool_calls:
-            result = _route_tool(tc, self.scene, self.cast)
-            tool_results.append(result)
-
-        # 6. Clean non-cast dialogue from the response (enforcement),
-        #    then surface the violation as an engine note so it is visible
-        #    in the transcript and in the next prompt's history.
-        narration = _clean_noncast_dialogue(response, self.cast)
-        if violations:
-            narration += (
-                "\n\n[Engine: CAST-LOCK removed non-cast speaker(s): "
-                f"{', '.join(violations)}]"
-            )
-
-        # If there were tool results, append failures as engine notes
-        engine_notes = []
-        for tr in tool_results:
-            if not tr.success:
-                engine_notes.append(f"[Engine: {tr.message}]")
-
-        if engine_notes:
-            narration += "\n\n" + "\n".join(engine_notes)
-
-        # 7. Record dialogue lines into scene state
-        for m in re.finditer(r'^\[(\w+)\]:\s*"([^"]*)"', narration, re.MULTILINE):
-            speaker = _check_cast_lock(m.group(1), self.cast)
-            if speaker:
+        def process_line(line: str):
+            """Handle one complete line: route tool calls, record dialogue,
+            voice the first eligible beat. Mutates scene + closure state."""
+            nonlocal voiced
+            # Route tool calls on this line (fires as the line arrives)
+            for tc in parse_tool_calls(line):
+                result = _route_tool(tc, self.scene, self.cast)
+                tool_results.append(result)
+                if result.success and "expression" in result.data:
+                    changed_exprs.add(result.data["character"])
+            # Record dialogue (cast-lock cleaning is line-based, so a single
+            # cleaned line matches what the full-text pass would record).
+            cleaned = _clean_noncast_dialogue(line, self.cast)
+            for m in re.finditer(r'^\[(\w+)\]:\s*"([^"]*)"', cleaned, re.MULTILINE):
+                speaker = _check_cast_lock(m.group(1), self.cast)
+                if not speaker:
+                    continue
                 self.scene.dialogue.append({
                     "speaker": speaker,
                     "text": m.group(2),
                     "expression": self.scene.expressions.get(speaker, "neutral"),
                 })
-
-        # 8. Selective voicing — voice the key emotional beat of this turn:
-        #    the first dialogue line spoken by a character whose expression
-        #    changed during this turn (per shipped-VN convention, not full voicing).
-        self.last_voice = None
-        if self.voice is not None:
-            changed = {tr.data["character"] for tr in tool_results
-                       if tr.success and "expression" in tr.data}
-            for m in re.finditer(r'^\[(\w+)\]:\s*"([^"]*)"', narration, re.MULTILINE):
-                speaker = _check_cast_lock(m.group(1), self.cast)
-                if speaker and speaker in changed and m.group(2).strip():
+                # Selective voicing — the first dialogue line spoken by a
+                # character whose expression changed earlier in this turn.
+                if (self.voice is not None and not voiced
+                        and speaker in changed_exprs and m.group(2).strip()):
                     expr = self.scene.expressions.get(speaker, "neutral")
                     emotion = _EXPRESSION_EMOTION.get(expr, "neutral")
                     try:
@@ -739,12 +791,71 @@ class VNEngine:
                         self.last_voice = self.voice.speak(m.group(2), speaker, emotion=emotion)
                     except Exception as e:
                         print(f"[engine] voice failed: {e}")
-                    break
+                    voiced = True
 
-        # 9. Increment turn
+        # 2. Stream the model, line-buffered (bracket/quote aware so a
+        #    multi-line tool call is never split across the newline).
+        response = ""
+        pending = ""
+        for delta in self.model.stream(messages):
+            if not delta:
+                continue
+            response += delta
+            pending += delta
+            lines, pending = _split_complete_lines(pending)
+            for line in lines:
+                process_line(line)
+            if lines:
+                # Partial narration for incremental display (notes come last).
+                yield _clean_noncast_dialogue(response, self.cast), self.scene
+        # Flush the trailing partial line, if any.
+        if pending:
+            process_line(pending)
+
+        # 3. Cast-lock check — over the full response, before cleaning.
+        violations = _find_cast_violations(response, self.cast)
+
+        # Trace the raw prompt→response for fine-tuning (real models only;
+        # mock/scripted output is skipped). Best-effort, never raises.
+        if not getattr(self.model, "is_mock", False):
+            # Prefer the SERVER-reported model id (cfg.model is a cosmetic label
+            # that can lie — e.g. a stale "gemma-12b" default). Falls back to
+            # cfg.model when the client can't ask the server.
+            model_id = getattr(getattr(self.model, "cfg", None), "model", "")
+            resolve = getattr(self.model, "server_model", None)
+            if callable(resolve):
+                try:
+                    model_id = resolve() or model_id
+                except Exception:
+                    pass
+            log_turn(
+                messages, response,
+                model=model_id,
+                context={
+                    "turn": self.scene.turn,
+                    "scene": self.scene.description,
+                    "mood": self.scene.mood,
+                    "present": list(self.scene.present),
+                    "player_input": player_choice_text,
+                    "cast_violations": violations,
+                },
+            )
+
+        # 4. Final narration: cleaned response + cast-lock / engine notes.
+        narration = _clean_noncast_dialogue(response, self.cast)
+        if violations:
+            narration += (
+                "\n\n[Engine: CAST-LOCK removed non-cast speaker(s): "
+                f"{', '.join(violations)}]"
+            )
+        engine_notes = [f"[Engine: {tr.message}]"
+                        for tr in tool_results if not tr.success]
+        if engine_notes:
+            narration += "\n\n" + "\n".join(engine_notes)
+
+        # 5. Increment turn and emit the final result.
         self.scene.turn += 1
-
-        return narration, self.scene
+        yield narration, self.scene
 
     def apply_choice_effects(self, choice: Choice):
         """Apply the effects of a player-selected choice.

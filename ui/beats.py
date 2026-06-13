@@ -253,24 +253,34 @@ def _segment_beats(response: str, cast: dict[str, CastMember],
 def _render_beats_screen(beats: list[dict], idx: int, scene: SceneState,
                          bg_provider: BackgroundProvider,
                          prev_bg_path: str,
-                         log_text: str = "") -> tuple[str, str, Optional[str]]:
+                         log_text: str = "",
+                         streaming: bool = False
+                         ) -> tuple[str, str, Optional[str]]:
     """Render the VN screen for beat `idx`. Choices appear only on the final
-    beat; earlier beats show the ▼ continue hint. The HUD, scene-log panel and
-    cast panel are baked into the canvas HTML. Returns
-    (screen_html, new_prev_bg_path, voice_path)."""
+    beat ONCE the turn has finished streaming; earlier beats show the ▼ continue
+    hint. While `streaming=True` and the reader has caught up to the last beat
+    produced so far, show the ✦ loading pulse instead of choices (the model is
+    still writing). The HUD, scene-log panel and cast panel are baked into the
+    canvas HTML. Returns (screen_html, new_prev_bg_path, voice_path)."""
     cast_html = _cast_panel_html_inner(scene.cast)
 
     if not beats:
         bg_info = bg_provider.get_background(scene.background)
         screen = _vn_screen_html(bg_info.path, scene.cast, scene.present,
-                                 scene.expressions, choices=scene.choices,
+                                 scene.expressions,
+                                 choices=None if streaming else scene.choices,
                                  prev_bg_path=prev_bg_path,
+                                 waiting=streaming,
                                  log_text=log_text, cast_html=cast_html)
         return screen, bg_info.path, None
 
     idx = max(0, min(idx, len(beats) - 1))
     beat = beats[idx]
-    is_last = idx == len(beats) - 1
+    at_buffer_end = idx == len(beats) - 1
+    # The reader has caught up but the model is still writing → wait, don't
+    # reveal choices yet. Only the truly-final beat of a finished turn shows them.
+    waiting = streaming and at_buffer_end
+    is_last = at_buffer_end and not streaming
     bg_info = bg_provider.get_background(beat["background"])
 
     screen = _vn_screen_html(
@@ -283,7 +293,8 @@ def _render_beats_screen(beats: list[dict], idx: int, scene: SceneState,
         narration=beat["text"] if not beat["speaker"] else "",
         choices=scene.choices if is_last else None,
         prev_bg_path=prev_bg_path,
-        more=not is_last,
+        more=not at_buffer_end,
+        waiting=waiting,
         log_text=log_text,
         cast_html=cast_html,
     )

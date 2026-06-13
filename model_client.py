@@ -21,7 +21,7 @@ import json
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import Optional, Callable, Iterator
 
 import requests
 
@@ -32,22 +32,29 @@ import requests
 class ModelConfig:
     backend: str = "server"
     base_url: str = "http://localhost:8110/v1"
-    model: str = "gemma-12b"
+    model: str = "gemma-4-26b-a4b"
     api_key: str = "not-needed"
     temperature: float = 0.8
     max_tokens: int = 1024
     timeout: int = 120
+    # Anti-repetition sampling. llama.cpp's OpenAI endpoint honors both.
+    # frequency penalizes tokens by how often they already appeared (n-gram
+    # recycling); presence penalizes any reuse at all (topic recycling).
+    frequency_penalty: float = 0.4
+    presence_penalty: float = 0.3
 
     @classmethod
     def from_env(cls) -> "ModelConfig":
         return cls(
             backend=os.getenv("ARS_FABULA_BACKEND", "server"),
             base_url=os.getenv("ARS_FABULA_BASE_URL", "http://localhost:8110/v1"),
-            model=os.getenv("ARS_FABULA_MODEL", "gemma-12b"),
+            model=os.getenv("ARS_FABULA_MODEL", "gemma-4-26b-a4b"),
             api_key=os.getenv("ARS_FABULA_API_KEY", "not-needed"),
             temperature=float(os.getenv("ARS_FABULA_TEMPERATURE", "0.8")),
             max_tokens=int(os.getenv("ARS_FABULA_MAX_TOKENS", "1024")),
             timeout=int(os.getenv("ARS_FABULA_TIMEOUT", "120")),
+            frequency_penalty=float(os.getenv("ARS_FABULA_FREQUENCY_PENALTY", "0.4")),
+            presence_penalty=float(os.getenv("ARS_FABULA_PRESENCE_PENALTY", "0.3")),
         )
 
 
@@ -64,6 +71,17 @@ class ModelClient(ABC):
     def generate(self, messages: list[dict], **kw) -> str:
         """Convenience: text-only completion."""
         return self.chat(messages, **kw).get("content") or ""
+
+    def stream(self, messages: list[dict], tools: Optional[list] = None,
+               **kw) -> Iterator[str]:
+        """Yield text deltas as they arrive.
+
+        Default (non-streaming) fallback: produce the whole completion as a
+        single chunk. Real streaming backends override this. Callers buffer
+        the deltas to line-break boundaries, so a one-shot multi-line chunk
+        is split into complete lines just the same.
+        """
+        yield self.chat(messages, tools, **kw).get("content") or ""
 
     def health(self) -> bool:
         """Check if the backend is reachable. Default False for abstract clients."""
@@ -82,6 +100,10 @@ class LlamaServerClient(ModelClient):
             "messages": messages,
             "temperature": kw.get("temperature", self.cfg.temperature),
             "max_tokens": kw.get("max_tokens", self.cfg.max_tokens),
+            "frequency_penalty": kw.get("frequency_penalty",
+                                        self.cfg.frequency_penalty),
+            "presence_penalty": kw.get("presence_penalty",
+                                       self.cfg.presence_penalty),
         }
         if tools:
             payload["tools"] = tools
@@ -95,12 +117,87 @@ class LlamaServerClient(ModelClient):
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]
 
+    def stream(self, messages, tools=None, **kw) -> Iterator[str]:
+        """Stream text deltas via OpenAI-style SSE (stream: true)."""
+        payload = {
+            "model": kw.get("model", self.cfg.model),
+            "messages": messages,
+            "temperature": kw.get("temperature", self.cfg.temperature),
+            "max_tokens": kw.get("max_tokens", self.cfg.max_tokens),
+            "frequency_penalty": kw.get("frequency_penalty",
+                                        self.cfg.frequency_penalty),
+            "presence_penalty": kw.get("presence_penalty",
+                                       self.cfg.presence_penalty),
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = kw.get("tool_choice", "auto")
+        with requests.post(
+            f"{self.cfg.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.cfg.api_key}",
+                     "Content-Type": "application/json"},
+            json=payload, timeout=self.cfg.timeout, stream=True,
+        ) as resp:
+            resp.raise_for_status()
+            # SSE responses rarely declare a charset, and requests then
+            # defaults text/* to ISO-8859-1 (RFC 2616) — which mangles
+            # multi-byte UTF-8 (— ’ …) into mojibake ("â€”"). The payload
+            # is JSON, which is always UTF-8; decode it as such.
+            resp.encoding = "utf-8"
+            for raw in resp.iter_lines(decode_unicode=True):
+                if not raw:
+                    continue  # keep-alive / frame separator
+                if not raw.startswith("data:"):
+                    continue
+                data = raw[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(data)["choices"][0].get("delta", {})
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+                piece = delta.get("content")
+                if piece:
+                    yield piece
+
     def health(self) -> bool:
         try:
             base = self.cfg.base_url.rsplit("/v1", 1)[0]
             return requests.get(f"{base}/health", timeout=5).status_code == 200
         except requests.RequestException:
             return False
+
+    def server_model(self) -> str:
+        """The model id the SERVER actually has loaded (GET /v1/models).
+
+        llama-server's `model` payload field is cosmetic — it echoes whatever
+        the client sends — so cfg.model can lie about the real base (e.g. a
+        stale "gemma-12b" default while a 26B-A4B gguf is loaded). This asks the
+        server what it loaded so trace provenance is correct. Cached after the
+        first call; falls back to cfg.model if the endpoint is unreachable.
+        """
+        cached = getattr(self, "_server_model", None)
+        if cached is not None:
+            return cached
+        try:
+            payload = requests.get(f"{self.cfg.base_url}/models", timeout=5).json()
+            # OpenAI shape: {"data": [{"id": ...}]}. The atomic-fork/ollama
+            # shape: {"models": [{"name"/"model": ...}]}. Accept either.
+            entries = payload.get("data") or payload.get("models") or []
+            first = entries[0] if entries else {}
+            model_id = first.get("id") or first.get("name") or first.get("model")
+            if model_id:
+                # Strip any directory prefix so the id is the gguf name/alias.
+                # Cache ONLY a successful lookup — a failure (e.g. the server
+                # still loading on the first turn) must not pin the fallback
+                # label for the rest of the process.
+                self._server_model = os.path.basename(str(model_id))
+                return self._server_model
+        except (requests.RequestException, ValueError, KeyError,
+                IndexError, AttributeError):
+            pass
+        return self.cfg.model
 
 
 # ── Transformers backend: in-process model (HF Spaces / ZeroGPU) ────────
