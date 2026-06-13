@@ -8,6 +8,7 @@ import time
 import gradio as gr
 
 from vn_contracts import SceneState, CastMember
+from vn_prompt import build_recent_history
 from providers import BackgroundProvider
 from cast_pipeline import load_curated_cast
 from vn_engine import read_save, load_cast_card
@@ -15,7 +16,7 @@ from vn_engine import read_save, load_cast_card
 from .bootstrap import make_initial_scene, build_engine
 from .screens import (_title_screen_html, _cast_panel_html,
                       _casting_screen_html, _review_screen_html,
-                      _slot_rows_html)
+                      _loading_screen_html, _slot_rows_html)
 from .beats import clean_narration, _segment_beats, _render_beats_screen
 
 
@@ -81,6 +82,12 @@ def make_callbacks(bg_provider: BackgroundProvider):
 
             # Generate first base for review
             key, preset = specs[0]
+            yield (None, None,
+                   _loading_screen_html(
+                       f"Sketching {preset.get('name', key)}…",
+                       "the artist is drawing the first portrait"),
+                   {}, _cast_panel_html({}), "",
+                   f"Generating {preset.get('name', key)}…", None, "", [], 0, None)
             char_dir = _char_dir(key)
             base_path = _generate_base_with_face_gate(key, preset, char_dir)
 
@@ -123,7 +130,13 @@ def make_callbacks(bg_provider: BackgroundProvider):
             yield (*_empty(), None)
             return
 
-        # Open the scene
+        # Open the scene — pulse the loader while the model writes the
+        # opening turn (same waiting vocabulary as every other generation).
+        yield (None, None,
+               _loading_screen_html("The story begins…",
+                                    "the narrator is setting the scene"),
+               cast, _cast_panel_html(cast), "", "Opening scene…",
+               None, "", [], 0, None)
         scene = SceneState(
             cast=cast, present=[],
             background="classroom", mood="peaceful",
@@ -145,27 +158,48 @@ def make_callbacks(bg_provider: BackgroundProvider):
                f"{scene.chapter} · {scene.background} ({scene.mood}) · {status}",
                voice_path, prev_bg, beats, 0, None)
 
-    def on_casting_confirm(casting_state, casting_prompt: str,
-                           _scene: SceneState, _engine, _prev_bg: str):
-        """Confirm the current character's base and advance.
+    def _loading_step(message: str, sub: str = "", info: str = ""):
+        """An intermediate 12-tuple for the casting generators: swap in the
+        ✦ loading screen + status line, gr.skip() everything else."""
+        return (gr.skip(), gr.skip(), _loading_screen_html(message, sub),
+                gr.skip(), gr.skip(), gr.skip(), info or message,
+                gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
 
-        If more characters remain: generate the next base, return review screen.
+    def _apply_review_edits(preset: dict, key: str, casting_prompt: str,
+                            casting_desc: str, reseed: bool):
+        """Fold the review screen's edited prompt + personality back into the
+        character preset. The personality is re-sent to the story model every
+        turn (cast descriptions), so editing it reshapes the voice."""
+        if casting_prompt and casting_prompt.strip():
+            preset["identity_prompt"] = casting_prompt.strip()
+            if reseed:
+                # Update the seed to reflect prompt changes (so redo gets
+                # fresh results)
+                from cast_pipeline import _stable_seed
+                preset["seed"] = _stable_seed(preset.get("name", key),
+                                              preset["identity_prompt"])
+        if casting_desc and casting_desc.strip():
+            preset["personality"] = casting_desc.strip()
+
+    def on_casting_confirm(casting_state, casting_prompt: str, casting_desc: str,
+                           _scene: SceneState, _engine, _prev_bg: str):
+        """Confirm the current character's base and advance (a generator —
+        every generation phase shows the ✦ loading screen while it runs).
+
+        If more characters remain: generate the next base, yield review screen.
         If all confirmed: bake expressions, VRAM swap, start the VN scene.
         """
         if not casting_state or casting_state.get("phase") != "review":
-            return (*_empty(), None)
+            yield (*_empty(), None)
+            return
 
         specs = casting_state["specs"]
         idx = casting_state["idx"]
         fast = casting_state.get("fast", False)
 
-        # Update current character's prompt from the (possibly edited) textbox
+        # Fold the (possibly edited) prompt + description into the preset
         key, preset = specs[idx]
-        if casting_prompt and casting_prompt.strip():
-            preset["identity_prompt"] = casting_prompt.strip()
-            # Update the seed to reflect prompt changes (so redo gets fresh results)
-            from cast_pipeline import _stable_seed
-            preset["seed"] = _stable_seed(preset.get("name", key), preset["identity_prompt"])
+        _apply_review_edits(preset, key, casting_prompt, casting_desc, reseed=True)
 
         # Advance to next character
         next_idx = idx + 1
@@ -176,6 +210,10 @@ def make_callbacks(bg_provider: BackgroundProvider):
             set_fast_generation(fast)
 
             next_key, next_preset = specs[next_idx]
+            next_name = next_preset.get("name", next_key)
+            yield _loading_step(f"Sketching {next_name}…",
+                                "the artist is drawing the next portrait",
+                                f"Generating {next_name} · {next_idx + 1}/{len(specs)}")
             char_dir = _char_dir(next_key)
             base_path = _generate_base_with_face_gate(next_key, next_preset, char_dir)
 
@@ -185,8 +223,9 @@ def make_callbacks(bg_provider: BackgroundProvider):
                                          next_idx + 1, len(specs))
             info = f"Review: {next_preset.get('name', next_key)} · {next_idx + 1}/{len(specs)}"
 
-            return (None, None, screen, {}, _cast_panel_html({}), "", info, None, "",
-                    [], 0, new_state)
+            yield (None, None, screen, {}, _cast_panel_html({}), "", info, None, "",
+                   [], 0, new_state)
+            return
 
         # All confirmed — bake expressions, swap VRAM, start the VN
         from cast_pipeline import (_generate_one_via_comfy, _char_dir,
@@ -197,7 +236,11 @@ def make_callbacks(bg_provider: BackgroundProvider):
 
         # Bake expressions for all characters (UNET still hot from base gen)
         members = []
-        for skey, spreset in specs:
+        for i, (skey, spreset) in enumerate(specs):
+            sname = spreset.get("name", skey)
+            yield _loading_step(f"Baking expressions — {sname}…",
+                                f"character {i + 1} of {len(specs)}",
+                                f"Baking expressions · {i + 1}/{len(specs)}")
             char_dir = _char_dir(skey)
             base = os.path.join(char_dir, f"{skey}_base.png")
             try:
@@ -212,13 +255,18 @@ def make_callbacks(bg_provider: BackgroundProvider):
 
         cast = {m.character.name: m for m in members}
         if not cast:
-            return (*_empty(), None)
+            yield (*_empty(), None)
+            return
 
         # VRAM swap: unload ComfyUI, load LLM
+        yield _loading_step("Waking the narrator…",
+                            "loading the story model", "Loading story model…")
         comfy_free_vram()
         ensure_llm(ModelConfig.from_env(), timeout=300)
 
         # Start the VN
+        yield _loading_step("The story begins…",
+                            "the narrator is setting the scene", "Opening scene…")
         scene = SceneState(
             cast=cast, present=[],
             background="classroom", mood="peaceful",
@@ -236,15 +284,17 @@ def make_callbacks(bg_provider: BackgroundProvider):
         screen, new_prev_bg, voice_path = _render_beats_screen(
             beats, 0, scene, bg_provider, "", log_text=log)
 
-        return (scene, engine, screen, cast, _cast_panel_html(cast),
-                log,
-                f"{scene.chapter} · {scene.background} ({scene.mood}) · {status}",
-                voice_path, new_prev_bg, beats, 0, None)
+        yield (scene, engine, screen, cast, _cast_panel_html(cast),
+               log,
+               f"{scene.chapter} · {scene.background} ({scene.mood}) · {status}",
+               voice_path, new_prev_bg, beats, 0, None)
 
-    def on_casting_redo(casting_state, casting_prompt: str):
-        """Regenerate the current character's base with the edited prompt."""
+    def on_casting_redo(casting_state, casting_prompt: str, casting_desc: str):
+        """Regenerate the current character's base with the edited prompt
+        (a generator — the regeneration runs behind the ✦ loading screen)."""
         if not casting_state or casting_state.get("phase") != "review":
-            return (_title_screen_html(), "No active review", None, "")
+            yield (_title_screen_html(), "No active review", None, "")
+            return
 
         from cast_pipeline import (set_fast_generation, _generate_base_with_face_gate,
                                    _char_dir, build_identity_prompt)
@@ -256,12 +306,18 @@ def make_callbacks(bg_provider: BackgroundProvider):
 
         set_fast_generation(fast)
 
-        # Update prompt from the textbox
-        if casting_prompt and casting_prompt.strip():
-            preset["identity_prompt"] = casting_prompt.strip()
+        # Update prompt + description from the textboxes (no reseed here —
+        # redo bumps the seed itself just below)
+        _apply_review_edits(preset, key, casting_prompt, casting_desc, reseed=False)
 
         # Bump seed for a genuinely different result
         preset["seed"] = preset.get("seed", 42) + 1
+
+        name = preset.get("name", key)
+        yield (_loading_screen_html(f"Re-sketching {name}…",
+                                    "the artist is trying again"),
+               f"Regenerating {name} · {idx + 1}/{len(specs)}",
+               gr.skip(), gr.skip())
 
         char_dir = _char_dir(key)
         base_path = _generate_base_with_face_gate(key, preset, char_dir)
@@ -271,7 +327,7 @@ def make_callbacks(bg_provider: BackgroundProvider):
         info = f"Review: {preset.get('name', key)} · {idx + 1}/{len(specs)}"
 
         # Clear the prompt box so it shows the new prompt on next load
-        return (screen, info, casting_state, preset["identity_prompt"])
+        yield (screen, info, casting_state, preset["identity_prompt"])
 
     def _append_log(prev_log: str, player_name: str, player_text: str,
                     narration: str) -> str:
@@ -288,9 +344,17 @@ def make_callbacks(bg_provider: BackgroundProvider):
 
     def on_choice(choice_id: str, choice_text: str,
                   scene: SceneState, engine, prev_bg: str, prev_log: str = ""):
-        """A choice click → THE SCENE TURN."""
+        """A choice click → THE SCENE TURN.
+
+        A Gradio generator: the model is streamed line by line. As soon as the
+        first display beat is ready it is rendered (time-to-first-text), and the
+        rest fill the buffered beat list as later lines arrive — keeping the
+        existing click-to-advance pacing. The final yield carries the complete
+        beat list and the full session-log entry.
+        """
         if not engine or not scene or not choice_id:
-            return _empty(scene)
+            yield (*_empty(scene), False)
+            return
 
         for choice in scene.choices:
             if choice.id == choice_id:
@@ -301,21 +365,50 @@ def make_callbacks(bg_provider: BackgroundProvider):
         # can replay expression/background changes in order.
         pre_expr, pre_bg = dict(scene.expressions), scene.background
         pre_present = list(scene.present)
-        raw, scene = engine.run_turn(choice_text or choice_id)
-        beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg,
-                               init_present=pre_present, voice_line=engine.last_voice)
 
-        # The Scene Log is a full-session register: every turn's narration
-        # plus the player's answer that triggered it.
+        def info() -> str:
+            return f"Turn {scene.turn} · {scene.background} ({scene.mood})"
+
+        shown = False
+        raw, beats = "", []
+        # The model sees the tail of the session log so it knows what the
+        # player has already read — the fix for re-describing every turn.
+        history = build_recent_history(prev_log)
+        for raw, scene in engine.run_turn_stream(choice_text or choice_id,
+                                                 history=history):
+            beats = _segment_beats(raw, scene.cast, pre_expr, pre_bg,
+                                   init_present=pre_present,
+                                   voice_line=engine.last_voice)
+            if not shown and beats:
+                # First beat ready → render it now. streaming=True so if the
+                # reader is already at the last beat produced so far, the screen
+                # shows the ✦ loader instead of choices until the model finishes.
+                log = _append_log(prev_log, scene.player_name,
+                                  choice_text or "", clean_narration(raw))
+                screen, new_prev_bg, voice_path = _render_beats_screen(
+                    beats, 0, scene, bg_provider, prev_bg, log_text=log,
+                    streaming=True)
+                shown = True
+                yield (scene, engine, screen, scene.cast,
+                       _cast_panel_html(scene.cast), log, info(),
+                       voice_path, new_prev_bg, beats, 0, True)
+            else:
+                # Keep the displayed beat; just grow the buffered beat list so
+                # click-to-advance has the later beats ready. turn_streaming
+                # stays True so on_advance withholds choices at the buffer end.
+                yield (scene, gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+                       gr.skip(), gr.skip(), gr.skip(), gr.skip(), beats,
+                       gr.skip(), True)
+
+        # Final: the model has stopped writing. Publish the complete beat list,
+        # the full session-log entry, and turn_streaming=False so the reader's
+        # next advance reveals the choices. Do NOT re-render vn_screen here —
+        # that would yank the reader back to beat 0 if they advanced mid-stream;
+        # on_advance re-renders (now non-streaming) on their next click.
         log = _append_log(prev_log, scene.player_name,
                           choice_text or "", clean_narration(raw))
-        screen, new_prev_bg, voice_path = _render_beats_screen(
-            beats, 0, scene, bg_provider, prev_bg, log_text=log)
-
-        return (scene, engine, screen, scene.cast, _cast_panel_html(scene.cast),
-                log,
-                f"Turn {scene.turn} · {scene.background} ({scene.mood})",
-                voice_path, new_prev_bg, beats, 0)
+        yield (scene, gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+               log, info(), gr.skip(), gr.skip(), beats, gr.skip(), False)
 
     def on_save(slot: float, save_name: str, log_text: str,
                 scene: SceneState, engine):
@@ -381,17 +474,22 @@ def make_callbacks(bg_provider: BackgroundProvider):
         scene = engine.load(slot)
         return _loaded_view(scene, engine, slot, "", log_text=data.log_text)
 
-    def on_advance(beats, idx, scene: SceneState, prev_bg: str, log_text: str):
+    def on_advance(beats, idx, scene: SceneState, prev_bg: str, log_text: str,
+                   streaming: bool = False):
         """Reveal the next beat (click-the-screen / Space / Enter).
 
         log_text comes from the hidden narration_log sink so the in-canvas
-        Scene Log panel keeps its content across beat re-renders.
+        Scene Log panel keeps its content across beat re-renders. `streaming`
+        (the turn_streaming state) keeps the choices hidden — showing the ✦
+        loader instead — when the reader catches up to the last beat the model
+        has produced while it is still writing.
         """
         if not beats:
             return gr.skip(), gr.skip(), None, gr.skip(), gr.skip()
         new_idx = min((idx or 0) + 1, len(beats) - 1)
         screen, new_prev_bg, voice_path = _render_beats_screen(
-            beats, new_idx, scene, bg_provider, prev_bg, log_text=log_text or "")
+            beats, new_idx, scene, bg_provider, prev_bg, log_text=log_text or "",
+            streaming=streaming)
         info = f"Turn {scene.turn} · {scene.background} ({scene.mood})"
         return screen, new_idx, voice_path, info, new_prev_bg
 
@@ -400,13 +498,16 @@ def make_callbacks(bg_provider: BackgroundProvider):
         """Free-text action → a scene turn. Wraps on_choice and ALSO clears
         the input box server-side (returns "" into free_input) — no JS race.
 
-        Returns the 11 turn_outputs + the cleared free_input value.
+        Yields the 11 turn_outputs + turn_streaming + the cleared free_input.
         """
         if not (text or "").strip() or not engine or not scene:
             # Nothing to do — keep the box contents, change nothing else
-            return tuple(gr.skip() for _ in range(12))
-        result = on_choice("__free__", text.strip(), scene, engine, prev_bg, prev_log)
-        return (*result, "")   # clear free_input
+            # (11 turn outputs + turn_streaming + free_input).
+            yield tuple(gr.skip() for _ in range(13))
+            return
+        # Stream through on_choice, clearing free_input on every yield.
+        for out in on_choice("__free__", text.strip(), scene, engine, prev_bg, prev_log):
+            yield (*out, "")
 
     def on_reset():
         return _empty()

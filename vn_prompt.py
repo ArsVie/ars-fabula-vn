@@ -7,6 +7,29 @@ The [STATE] banner is appended dynamically each turn with current scene data.
 """
 from __future__ import annotations
 
+
+# ── Canonical enums (single source of truth — prompt text, validator, and
+#    exporter all read these; the prompt injects them via __PLACEHOLDERS__) ──
+
+MOOD_TAGS = [
+    "peaceful", "cheerful", "romantic", "melancholic",
+    "tense", "playful", "bittersweet", "cozy",
+]
+
+BACKGROUND_KEYS = {
+    "classroom": "A typical Japanese high school classroom",
+    "hallway": "School corridor with lockers",
+    "rooftop": "School rooftop with view of the city",
+    "courtyard": "School courtyard with cherry blossom trees",
+    "cafe": "A cozy café near the school",
+    "park": "A city park with benches and trees",
+    "library": "The school library, quiet and book-scented",
+    "home_room": "A character's bedroom",
+    "gate": "The school gate at the end of the day",
+    "sunset_hill": "A hill overlooking the city at sunset",
+}
+
+
 VN_SYSTEM_PROMPT = """You are the narrator of a Japanese-style anime visual novel — a slice-of-life romance set in a high school. Your tone is warm, emotionally perceptive, and gently dramatic. You write natural dialogue, believable character reactions, and choices that carry emotional weight.
 
 ## THE CAST (locked — immutable)
@@ -36,6 +59,7 @@ You have the following tools to control the VN. Call them using the exact format
 3. **set_expression** — Change a character's expression.
    `[TOOL: set_expression character="<name>" expression="<expression_key>"]`
    Valid expressions: neutral, smile, laugh, sad, angry, surprised, embarrassed
+   Only call this when the new expression DIFFERS from the character's current one (check the Expressions line in [STATE]). Re-setting the same expression is noise.
 
 4. **enter_character** — Bring a character onto the screen. Call this the first time a character appears or when they re-enter mid-scene. Characters NOT in the present list do not render.
    `[TOOL: enter_character character="<name>"]`
@@ -44,17 +68,17 @@ You have the following tools to control the VN. Call them using the exact format
    `[TOOL: exit_character character="<name>"]`
 
 6. **offer_choices** — Present the player with a set of choices.
-   `[TOOL: offer_choices choices="<json array of {{id, text, consequence}}>"]`
-   Each choice must have a unique id and display text. Consequence is the engine note.
+   `[TOOL: offer_choices choices='[{{"id": "...", "text": "...", "consequence": "..."}}]']`
+   SINGLE quotes around the JSON array, DOUBLE quotes inside (valid JSON — never Python-style single-quoted keys). Each choice must have a unique id and display text. Consequence is the engine note.
 
-5. **save_checkpoint** — Auto-save the current state.
+7. **save_checkpoint** — Auto-save the current state.
    `[TOOL: save_checkpoint]`
 
 ## RESPONSE FORMAT
 
 Your response is a VN scene. It follows this structure:
 
-1. **Narration** — Describe the setting, what's happening, the atmosphere. Keep each narration beat SHORT: at most 2 sentences before a dialogue line or another beat. Show don't tell, with one or two sensory details (cherry blossoms past the window, the distant school bell, afternoon light through the blinds). Do not write long paragraphs — the dialogue box is small; break longer description across multiple short beats.
+1. **Narration** — Describe what's happening. Keep each narration beat SHORT: at most 2 sentences before a dialogue line or another beat. Show don't tell, with AT MOST one or two sensory details per beat — and vary them: never reuse an image, phrase, or sensory detail you have already used in this scene. Do not write long paragraphs — the dialogue box is small; break longer description across multiple short beats.
 
 2. **Dialogue** — If characters are speaking, write their dialogue tagged with their name:
    `[character_name]: "Their dialogue here."`
@@ -90,27 +114,25 @@ Don't spam expression changes. One or two per scene turn, placed at the emotiona
 
 Characters start the scene off-screen (not present). Use **enter_character** when they first appear or walk into the scene. Use **exit_character** when they leave. A character must be on screen to speak or be seen — if they're not in `present`, their sprite doesn't render. You do NOT need to enter_character for characters already present (check [STATE] banner for who's present).
 
+## SETTING PERSISTENCE — DO NOT RE-DESCRIBE
+
+Once a setting has been established, it stays established in the player's mind. When a beat continues in the same location, open with action or dialogue and describe ONLY what changes — someone moves, a sound interrupts, the light shifts. Never re-establish the scene, re-describe the room, or restate the time of day the player already knows.
+
+If the prompt contains a RECENT STORY block, everything in it has ALREADY been shown to the player. Do not re-narrate, summarize, or re-describe anything in it — no repeated imagery, no repeated phrases, no re-staging of past events. Continue the story from where it ends.
+
 ## MOOD TAGS
 
-Available moods: peaceful, cheerful, romantic, melancholic, tense, playful, bittersweet, cozy
+Available moods: __MOOD_TAGS__
 
 ## BACKGROUND KEYS
 
 Available backgrounds (call advance_scene with one of these):
-`classroom` — A typical Japanese high school classroom
-`hallway` — School corridor with lockers
-`rooftop` — School rooftop with view of the city
-`courtyard` — School courtyard with cherry blossom trees
-`cafe` — A cozy café near the school
-`park` — A city park with benches and trees
-`library` — The school library, quiet and book-scented
-`home_room` — A character's bedroom
-`gate` — The school gate at the end of the day
-`sunset_hill` — A hill overlooking the city at sunset
+__BACKGROUND_KEYS__
 
 ## IMPORTANT CONSTRAINTS
 
 - Cast-lock: NEVER invent a character who isn't in the cast list above.
+- Never repeat imagery, sensory details, or events from RECENT STORY — always move the story forward.
 - Call tools at the START or END of your response (not in the middle of narration).
 - Each tool call on its own line, wrapped in [TOOL: ...] brackets.
 - End each response with either continuing narration or choices — the player should always have something to react to.
@@ -134,8 +156,8 @@ Tools available (use [TOOL: name args=val] format):
 - save_checkpoint
 
 Expressions: neutral, smile, laugh, sad, angry, surprised, embarrassed
-Moods: peaceful, cheerful, romantic, melancholic, tense, playful, bittersweet, cozy
-Backgrounds: classroom, hallway, rooftop, courtyard, cafe, park, library, home_room, gate, sunset_hill
+Moods: __MOOD_TAGS__
+Backgrounds: __BACKGROUND_NAMES__
 
 Rules:
 - Cast-lock: can only use characters listed above. No new characters.
@@ -144,6 +166,21 @@ Rules:
 - Write warm, character-focused, emotionally perceptive narration.
 - End with either narration or choices — always give the player something to react to.
 """
+
+
+# Inject the canonical enums into the prompt text (the prompts are later
+# .format()ed with cast/player, so enum injection uses __PLACEHOLDERS__ —
+# not {braces} — to stay out of format()'s way).
+def _background_block() -> str:
+    return "\n".join(f"`{key}` — {desc}" for key, desc in BACKGROUND_KEYS.items())
+
+
+VN_SYSTEM_PROMPT = (VN_SYSTEM_PROMPT
+                    .replace("__MOOD_TAGS__", ", ".join(MOOD_TAGS))
+                    .replace("__BACKGROUND_KEYS__", _background_block()))
+VN_SYSTEM_PROMPT_SHORT = (VN_SYSTEM_PROMPT_SHORT
+                          .replace("__MOOD_TAGS__", ", ".join(MOOD_TAGS))
+                          .replace("__BACKGROUND_NAMES__", ", ".join(BACKGROUND_KEYS)))
 
 
 CHARACTER_DESIGNER_PROMPT = """You design anime visual novel characters. Given a character name and a short concept phrase, you output the character's visual design as danbooru tags plus a personality.
@@ -216,13 +253,54 @@ def build_state_banner(scene) -> str:
     return "\n".join(lines)
 
 
-def build_full_prompt(scene, cast, player_choice_text: str = "", player_name: str = "Player") -> tuple[str, str]:
+def build_recent_history(log_text: str, max_turns: int = 4,
+                         max_chars: int = 1200) -> str:
+    """Trim the session log to its last few turns for prompt injection.
+
+    The session log interleaves `▸ Player: ...` action lines with narration
+    blocks, separated by blank lines (see ui/callbacks._append_log). A turn
+    boundary is a `▸` block; we walk back from the tail collecting blocks
+    until `max_turns` boundaries are covered or `max_chars` is exceeded.
+
+    Returns "" when the log is empty.
+    """
+    if not (log_text or "").strip():
+        return ""
+    blocks = [b for b in log_text.strip().split("\n\n") if b.strip()]
+    taken: list[str] = []
+    turns = size = 0
+    for block in reversed(blocks):
+        taken.append(block)
+        size += len(block) + 2
+        if block.lstrip().startswith("▸"):
+            turns += 1
+            if turns >= max_turns:
+                break
+        if size > max_chars:
+            break
+    history = "\n\n".join(reversed(taken))
+    if len(history) > max_chars:
+        # Hard cap: keep the tail, cut forward to the next line start so the
+        # block never opens mid-sentence fragment of a clipped first line.
+        history = history[-max_chars:]
+        nl = history.find("\n")
+        if nl != -1:
+            history = history[nl + 1:].lstrip("\n")
+    return history
+
+
+def build_full_prompt(scene, cast, player_choice_text: str = "",
+                      player_name: str = "Player",
+                      history: str = "") -> tuple[str, str]:
     """Build the system + user prompt pair for a model call.
 
     Args:
         scene: Current SceneState.
         cast: dict[str, CastMember] — the locked cast.
         player_choice_text: The choice the player made (empty for first scene).
+        history: Trimmed tail of the session log (build_recent_history). When
+            present, it is shown to the model ABOVE the [STATE] banner so it
+            knows what the player has already read and doesn't re-narrate it.
 
     Returns:
         (system_prompt, user_prompt) tuple.
@@ -235,5 +313,10 @@ def build_full_prompt(scene, cast, player_choice_text: str = "", player_name: st
         user = f"{state_banner}\n\n[CHOICE MADE]\n{player_choice_text}\n\nWrite the next scene in response to this choice. Show how the world reacts. Change background, expressions, and mood as appropriate."
     else:
         user = f"{state_banner}\n\nWrite the opening scene of this chapter. Set the atmosphere, introduce the setting, and let the story begin."
+
+    if history:
+        user = ("## RECENT STORY (already shown to the player — do NOT "
+                "re-describe or re-narrate any of it)\n"
+                f"{history}\n[END RECENT STORY]\n\n{user}")
 
     return system, user

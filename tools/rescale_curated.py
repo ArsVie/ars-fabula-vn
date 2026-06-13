@@ -77,20 +77,22 @@ def rescale_curated():
         nh = max(1, int(round(ch * FACTOR)))
 
         # Crop anchored on crown+center so the face stays intact
+        crop_left = int(round(cx * (FACTOR - 1)))
         crop_top = int(round(crown_y * (FACTOR - 1)))
 
         # Clamp so crop stays inside scaled image
+        crop_left = max(0, min(crop_left, nw - cw))
         crop_top = max(0, min(crop_top, nh - ch))
 
         for p in expr_paths:
             with Image.open(p) as img:
                 scaled = img.convert("RGBA").resize((nw, nh), Image.LANCZOS)
-                cropped = scaled.crop((0, crop_top,
-                                       nw, crop_top + ch))
+                cropped = scaled.crop((crop_left, crop_top,
+                                       crop_left + cw, crop_top + ch))
                 cropped.save(p)
 
         print(f"  [rescale] {char}: {len(expr_paths)} sprites "
-              f"{cw}×{ch} → {nw}×{nh} → crop at (0,{crop_top})")
+              f"{cw}×{ch} → {nw}×{nh} → crop at ({crop_left},{crop_top})")
 
     print()
     print(f"  [rescale] Done — {len(chars)} characters")

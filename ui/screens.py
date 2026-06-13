@@ -198,14 +198,33 @@ _ICON_TRAY_HTML = """
 
 
 
+def _loading_screen_html(message: str, sub: str = "") -> str:
+    """A full-canvas generation-wait screen: the pulsing ✦ plus a message.
+
+    The single waiting vocabulary of the app — every phase that blocks on
+    generation (model turn, sprite bake, VRAM swap) shows this same pulse,
+    matching the in-scene ✦ used for streaming/turn waits.
+    """
+    sub_html = f'<div class="vn-loading-sub">{_html.escape(sub)}</div>' if sub else ""
+    return f"""
+    <div class="vn-screen">
+      <div class="vn-loading">
+        <div class="vn-loading-star">✦</div>
+        <div class="vn-loading-msg">{_html.escape(message)}</div>
+        {sub_html}
+      </div>
+    </div>
+    """
+
+
 def _review_screen_html(key: str, preset: dict, base_path: str,
                          char_num: int, total: int) -> str:
     """Per-character review screen during interactive casting.
 
-    Shows the generated base image alongside the full prompt text
-    (editable) and Confirm/Redo buttons. The JS bridge writes the
-    textarea value to the hidden #casting-prompt-box before clicking
-    the hidden confirm/redo Gradio buttons.
+    Shows the generated base image alongside the full prompt text and the
+    character description (both editable) and Confirm/Redo buttons. The JS
+    bridge writes the textarea values to the hidden #casting-prompt-box /
+    #casting-desc-box before clicking the hidden confirm/redo Gradio buttons.
     """
     name = preset.get("name", key.capitalize())
     prompt = preset.get("identity_prompt", "")
@@ -215,14 +234,11 @@ def _review_screen_html(key: str, preset: dict, base_path: str,
                 if img_uri
                 else '<div class="review-no-image">Generation failed — try Redo</div>')
 
-    # The designed character: role + personality, as the story model wrote them
+    # The designed character: role (display) + personality (editable — it is
+    # re-sent to the story model every turn and shapes the character's voice).
     role = _html.escape(preset.get("role", "") or "")
-    personality = _html.escape(preset.get("personality", "") or "")
-    desc_html = ""
-    if role or personality:
-        role_html = f'<span class="review-role">{role}</span>' if role else ""
-        desc_html = (f'<div class="review-desc">{role_html}'
-                     f'<p class="review-personality">{personality}</p></div>')
+    personality = preset.get("personality", "") or ""
+    role_html = f'<div class="review-desc"><span class="review-role">{role}</span></div>' if role else ""
 
     return f"""
     <div class="vn-screen vn-casting-review">
@@ -231,7 +247,9 @@ def _review_screen_html(key: str, preset: dict, base_path: str,
         <div class="review-image">{img_html}</div>
         <div class="review-panel">
           <div class="review-name">{name}</div>
-          {desc_html}
+          {role_html}
+          <div class="review-prompt-label">Personality — their voice in the story</div>
+          <textarea class="review-prompt review-desc-edit" id="review-desc-text" rows="3">{_html.escape(personality)}</textarea>
           <div class="review-prompt-label">Prompt — edit and Redo to regenerate</div>
           <textarea class="review-prompt" id="review-prompt-text" rows="6">{_html.escape(prompt)}</textarea>
           <div class="review-actions">
@@ -292,6 +310,7 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
                     narration: str = "",
                     prev_bg_path: str = "",
                     more: bool = False,
+                    waiting: bool = False,
                     log_text: str = "",
                     cast_html: str = "") -> str:
     """Build the VN screen HTML: crossfading bg layers, sprites, dialogue, choices.
@@ -299,6 +318,12 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
     `more=True` marks the screen as having further beats to read this turn:
     it adds a ▼ continue hint and a `data-more="1"` flag the JS click/keyboard
     hook uses to advance the reader one beat at a time.
+
+    `waiting=True` means the reader has caught up to the last beat the model has
+    produced SO FAR but the turn is still streaming: show the ✦ loading pulse
+    (the same indicator used while a submitted turn is processing) and withhold
+    the choices / free-text bar until the model stops writing. It still flags
+    `data-more="1"` so a click re-checks for newly streamed beats.
     """
     bg_layers = ""
     prev_uri = data_uri(prev_bg_path) if prev_bg_path and prev_bg_path != bg_path else ""
@@ -335,17 +360,25 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
         elif narration:
             dialogue_html += f'<p class="vn-text narrator">{narration}</p>'
         dialogue_html += '</div>'
-    if more:
+    if waiting:
+        # Caught up to the streaming front — pulse the ✦ loader INSIDE the
+        # text box (where the ▼ continue hint normally sits, and where the
+        # post-choice wait pulse renders too — body.vn-waiting
+        # .vn-dialogue::after). One indicator, one place.
+        dialogue_html += '<div class="vn-streaming-wait">✦</div>'
+    elif more:
         dialogue_html += '<div class="vn-continue">▼</div>'
     dialogue_html += _ICON_TRAY_HTML
 
-    # Interaction cluster — shown on the LAST beat (not while there are more
-    # beats to read): the offered choices (if any) plus a free-text capsule as
-    # the final item, so the whole set reads as one centered column. It lives
-    # INSIDE the canvas, so it scales with the frame (not the page) and centers
-    # with the choices; the typing-done CSS gate hides it until the line ends.
+    # Interaction cluster — shown on the LAST beat ONLY once the turn has
+    # finished streaming (not while there are more beats to read, and not while
+    # the model is still writing): the offered choices (if any) plus a free-text
+    # capsule as the final item, so the whole set reads as one centered column.
+    # It lives INSIDE the canvas, so it scales with the frame (not the page) and
+    # centers with the choices; the typing-done CSS gate hides it until the line
+    # ends.
     choices_html = ""
-    if not more:
+    if not more and not waiting:
         parts = ['<div class="vn-choices">']
         for c in (choices or []):
             safe_text = c.text.replace('"', '&quot;')
@@ -367,8 +400,11 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
         parts.append('</div>')
         choices_html = "\n".join(parts)
 
+    # `data-more="1"` also while waiting so a click re-checks for new beats; the
+    # bar-reveal JS keys off data-more!=="1", so the free bar stays hidden.
+    more_flag = "1" if (more or waiting) else "0"
     return f"""
-    <div class="vn-screen{' advancing' if more else ''}" data-more="{'1' if more else '0'}" data-choices="{'1' if choices_html else '0'}" data-typing="pending">
+    <div class="vn-screen{' advancing' if more else ''}" data-more="{more_flag}" data-waiting="{'1' if waiting else '0'}" data-choices="{'1' if choices_html else '0'}" data-typing="pending">
         {bg_layers}
         <div class="vn-chars">{sprite_html}</div>
         {choices_html}

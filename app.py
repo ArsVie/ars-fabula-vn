@@ -46,6 +46,8 @@ def create_ui():
         prev_bg_state = gr.State("")
         beats_state = gr.State([])        # ordered display beats for this turn
         beat_idx_state = gr.State(0)      # which beat is currently shown
+        turn_streaming = gr.State(False)  # True while the model is still writing
+                                          # this turn — withholds the choices/bar
         casting_state = gr.State(None)    # interactive casting review state
 
         # ── The stage: the canvas plus the free-text bar overlaid inside its
@@ -148,6 +150,8 @@ def create_ui():
         # ── Casting review bridge widgets ──────────────────────
         casting_prompt_box = gr.Textbox(visible="hidden", interactive=True,
                                         elem_id="casting-prompt-box")
+        casting_desc_box = gr.Textbox(visible="hidden", interactive=True,
+                                      elem_id="casting-desc-box")
         casting_confirm_btn = gr.Button("Confirm", visible="hidden",
                                         elem_id="casting-confirm-btn")
         casting_redo_btn = gr.Button("Redo", visible="hidden",
@@ -185,7 +189,7 @@ def create_ui():
             fn=on_choice,
             inputs=[choice_input, choice_text_input, scene_state, engine_ref,
                     prev_bg_state, narration_log],
-            outputs=turn_outputs,
+            outputs=turn_outputs + [turn_streaming],
             show_progress="hidden",
         )
 
@@ -194,7 +198,7 @@ def create_ui():
         advance_btn.click(
             fn=on_advance,
             inputs=[beats_state, beat_idx_state, scene_state, prev_bg_state,
-                    narration_log],
+                    narration_log, turn_streaming],
             outputs=[vn_screen, beat_idx_state, voice_audio, scene_info, prev_bg_state],
             show_progress="hidden",
         )
@@ -216,7 +220,8 @@ def create_ui():
         # ── Casting review — confirm advances to next character ──
         casting_confirm_btn.click(
             fn=on_casting_confirm,
-            inputs=[casting_state, casting_prompt_box, scene_state, engine_ref, prev_bg_state],
+            inputs=[casting_state, casting_prompt_box, casting_desc_box,
+                    scene_state, engine_ref, prev_bg_state],
             outputs=start_outputs,
             show_progress="hidden",
         )
@@ -224,7 +229,7 @@ def create_ui():
         redo_outputs = [vn_screen, scene_info, casting_state, casting_prompt_box]
         casting_redo_btn.click(
             fn=on_casting_redo,
-            inputs=[casting_state, casting_prompt_box],
+            inputs=[casting_state, casting_prompt_box, casting_desc_box],
             outputs=redo_outputs,
             show_progress="hidden",
         )
@@ -233,7 +238,7 @@ def create_ui():
         #    own action…"). Clears the box server-side via the extra output. ─
         # Both the ➤ button and Enter (via JS bridge → clicks this button)
         # route here; clears the box server-side via the extra output.
-        free_outputs = turn_outputs + [free_input]
+        free_outputs = turn_outputs + [turn_streaming, free_input]
         free_submit.click(
             fn=on_free_submit,
             inputs=[free_input, scene_state, engine_ref, prev_bg_state,
