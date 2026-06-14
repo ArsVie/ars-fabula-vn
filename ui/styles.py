@@ -417,6 +417,23 @@ body.cast-setup-active .vn-cast-setup {
   display: flex; align-items: center; justify-content: center;
 }
 .vn-portrait.pending { border-style: dashed; border-color: var(--border-subtle); }
+/* The card currently being generated: accent border + soft pulse so the eye
+   tracks which character the bake is on. */
+.vn-portrait.active {
+  border-color: var(--border-accent);
+  box-shadow: 0 0 0 1px var(--border-accent), 0 0 18px -4px var(--border-accent);
+  animation: castingCardPulse 1.4s ease-in-out infinite;
+}
+@keyframes castingCardPulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--border-accent), 0 0 12px -6px var(--border-accent); }
+  50%      { box-shadow: 0 0 0 1px var(--border-accent), 0 0 22px -2px var(--border-accent); }
+}
+/* The ✦ start-symbol shown inside the active card before its sprite exists. */
+.casting-spinner {
+  font-size: clamp(1.4rem, 2.4cqw, 2.2rem);
+  color: var(--text-accent);
+  animation: vnPulse 1.2s ease infinite;
+}
 .vn-portrait img {
   width: 100%; height: 100%;
   object-fit: cover; object-position: top;

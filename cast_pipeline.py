@@ -858,7 +858,24 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
         return out_path
 
     _comfy_upload(base_path, f"{character_key}_base.png")
+    workflow, out_path, client_id = _build_expression_workflow(
+        character_key, expr_name, expr_tags, seed, anchor)
+    result = _comfy_run(workflow, client_id, timeout=200)
+    if result and _comfy_fetch_image(result, out_path):
+        return out_path
+    return None
 
+
+def _build_expression_workflow(character_key: str, expr_name: str,
+                               expr_tags: str, seed: int, anchor: str = ""):
+    """Build the FaceDetailer workflow for ONE expression — no upload, no run.
+
+    Returns (workflow, out_path, client_id). The base must already be uploaded
+    as f"{character_key}_base.png". Split out from _generate_expression so a
+    whole character's expression set can be assembled and run in a single
+    @spaces.GPU batch (see _bake_expressions)."""
+    out_path = os.path.join(_char_dir(character_key),
+                            f"{character_key}_{expr_name}.png")
     anchor_part = f"{anchor}, " if anchor else ""
     expr_prompt = f"{QUALITY}, {STYLE_TAGS}. {anchor_part}{expr_tags}"
 
@@ -870,12 +887,8 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
     if expr_name in EXPRESSION_NEGATIVE_TAGS:
         expr_negative = f"{NEGATIVE}, {EXPRESSION_NEGATIVE_TAGS[expr_name]}"
 
-    # FaceDetailer inputs — unified across all modes (see the module-level
-    # comment above; only base resolution differs per mode).
-    # Unified FaceDetailer params from the validated expression sheet.
-    # Lighter than the old heavier config (guide_size 384→256, steps 20→15,
-    # dpm_2_ancestral→euler) with no quality loss. bbox_threshold 0.5 catches
-    # expressions reliably (was 0.3 with more dilation/crop to compensate).
+    # Unified FaceDetailer params from the validated expression sheet (euler,
+    # 15 steps, guide_size 256, bbox_threshold 0.5).
     _fd_inputs = {
         "image": ["10", 0], "model": ["44", 0], "clip": ["45", 0], "vae": ["15", 0],
         "guide_size": 256, "guide_size_for": True, "max_size": 384,
@@ -905,12 +918,51 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
         "80": {"inputs": _fd_inputs, "class_type": "FaceDetailer"},
         "1": {"inputs": {"filename_prefix": f"{character_key}_{expr_name}", "images": ["80", 0]}, "class_type": "SaveImage"},
     }
+    return workflow, out_path, f"{character_key}_{expr_name}_{seed}"
 
-    result = _comfy_run(workflow, f"{character_key}_{expr_name}_{seed}",
-                        timeout=200)
-    if result and _comfy_fetch_image(result, out_path):
-        return out_path
-    return None
+
+def _bake_expressions(base_path: str, character_key: str, preset: dict,
+                      anchor: str = "") -> None:
+    """Bake the full STANDARD_EXPRESSIONS set for one character.
+
+    In embed mode the non-neutral expressions run in ONE @spaces.GPU batch:
+    ComfyUI loads the models once (its CLASSIC cache reuses the identical
+    loader nodes across the batch) and we pay the ZeroGPU allocation overhead
+    once instead of per image. In http mode (Docker/local) it keeps the
+    sequential per-expression path. Single-expression failures self-heal via
+    _generate_expression_retry. Shared model loads make all the difference on
+    ZeroGPU, where each separate GPU call costs ~tens of seconds of attach."""
+    seed = preset["seed"]
+    out_dir = _char_dir(character_key)
+    os.makedirs(out_dir, exist_ok=True)
+    nonneutral = [e for e in STANDARD_EXPRESSIONS if e != "neutral"]
+
+    # neutral == the base itself, copied through (identity-preserving)
+    if "neutral" in STANDARD_EXPRESSIONS:
+        shutil.copy2(base_path,
+                     os.path.join(out_dir, f"{character_key}_neutral.png"))
+
+    if COMFY_MODE != "embed":
+        for e in nonneutral:
+            path = _generate_expression_retry(base_path, character_key, e,
+                                              EXPRESSION_TAGS[e], seed, anchor=anchor)
+            print(f"    {e}: {'OK' if path else 'FAILED'}")
+        return
+
+    import comfy_embed
+    _comfy_upload(base_path, f"{character_key}_base.png")   # once for the batch
+    jobs = [(e,) + _build_expression_workflow(
+                character_key, e, EXPRESSION_TAGS[e], seed, anchor)
+            for e in nonneutral]
+    print(f"    batching {len(jobs)} expressions in one GPU call…")
+    infos = comfy_embed.run_batch([(wf, cid) for (_e, wf, _out, cid) in jobs])
+    for (e, _wf, outp, _cid), info in zip(jobs, infos):
+        ok = bool(info) and bool(_comfy_fetch_image(info, outp))
+        if not ok:
+            # self-heal a single miss without re-running the whole batch
+            ok = bool(_generate_expression_retry(
+                base_path, character_key, e, EXPRESSION_TAGS[e], seed, anchor=anchor))
+        print(f"    {e}: {'OK' if ok else 'FAILED'}")
 
 
 # Per-expression retry count on failure (bumped seed). 0 = no retry.
@@ -1363,12 +1415,7 @@ def _generate_one_via_comfy(key: str, preset: dict, base_path: str = None) -> Ca
     # The eye/hair anchor keeps those traits from drifting across the set.
     anchor = _face_anchor(preset.get("identity_prompt", ""))
     print(f"  [cast] Generating expressions for {key} (anchor: {anchor or 'none'})...")
-    for expr_name in STANDARD_EXPRESSIONS:
-        tags = EXPRESSION_TAGS[expr_name]
-        expr_path = _generate_expression_retry(base_path, key, expr_name,
-                                               tags, preset["seed"], anchor=anchor)
-        status = "OK" if expr_path else "FAILED"
-        print(f"    {expr_name}: {status}")
+    _bake_expressions(base_path, key, preset, anchor=anchor)
 
     # Step 3: Remove backgrounds (isnet-anime matte)
     print(f"  [cast] Removing backgrounds for {key}...")

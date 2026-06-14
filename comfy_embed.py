@@ -485,16 +485,11 @@ def _validate(prompt: dict, prompt_id: str):
         return   # validation is optional; stay quiet
 
 
-@_gpu
-def run_workflow(workflow: dict, client_id: str) -> Optional[dict]:
-    """Execute one workflow graph in-process and return the first SaveImage
-    output as an img_info dict (shaped like the HTTP _comfy_wait return), or
-    None on failure. Runs entirely inside one @spaces.GPU allocation.
-    """
-    if not _ensure():
-        return None
+def _execute_one(workflow: dict, client_id: str) -> Optional[dict]:
+    """Run ONE workflow on the (already-initialised) executor and return its
+    first-image info dict. NOT decorated — call only from inside an @spaces.GPU
+    function (run_workflow / run_batch) so the CUDA work is in a GPU window."""
     executor = _STATE["executor"]
-
     prompt_id = f"{client_id}-{int(time.time() * 1000)}"
     self_outputs = _output_node_ids(workflow)
     prefixes = _save_prefixes(workflow)
@@ -502,7 +497,6 @@ def run_workflow(workflow: dict, client_id: str) -> Optional[dict]:
     started = time.time()
 
     _validate(workflow, prompt_id)
-
     try:
         # execute(prompt, prompt_id, extra_data, execute_outputs) — the stable
         # core signature across the versions we pin.
@@ -527,12 +521,39 @@ def run_workflow(workflow: dict, client_id: str) -> Optional[dict]:
               f"(prefixes={prefixes})")
         return None
     newest = max(candidates, key=os.path.getmtime)
-    return {
-        "filename": os.path.basename(newest),
-        "subfolder": "",
-        "type": "output",
-        "_path": newest,
-    }
+    return {"filename": os.path.basename(newest), "subfolder": "",
+            "type": "output", "_path": newest}
+
+
+@_gpu
+def run_workflow(workflow: dict, client_id: str) -> Optional[dict]:
+    """Execute one workflow graph in-process and return its first-image info
+    dict (shaped like the HTTP _comfy_wait return), or None. Runs inside one
+    @spaces.GPU allocation."""
+    if not _ensure():
+        return None
+    return _execute_one(workflow, client_id)
+
+
+@_gpu
+def run_batch(items: list) -> list:
+    """Execute several workflows in ONE @spaces.GPU allocation and return a
+    list of their first-image info dicts (None for any that failed), in order.
+
+    This is the ZeroGPU cost win: each GPU call carries ~tens of seconds of
+    allocation/attach overhead, so baking a character's whole expression set in
+    one call instead of one-call-per-image collapses that overhead. `items` is
+    a list of (workflow, client_id) tuples."""
+    if not _ensure():
+        return [None] * len(items)
+    results = []
+    for workflow, client_id in items:
+        try:
+            results.append(_execute_one(workflow, client_id))
+        except Exception as e:
+            print(f"[comfy-embed] batch item '{client_id}' failed: {e}")
+            results.append(None)
+    return results
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -439,34 +439,52 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
 def _casting_screen_html(char_keys: list[str],
                          resolved: dict[str, CastMember],
                          message: str = "Assembling your cast…",
-                         sub: str = "") -> str:
-    """The casting-beat screen: portraits resolve one by one.
+                         sub: str = "",
+                         sprite_paths: dict[str, str] | None = None,
+                         active: int | None = None) -> str:
+    """The SINGLE casting/generation waiting surface: a card per character that
+    fills with its sprite as the bake progresses, with a ✦ header + sub-line.
 
-    `sub` adds a secondary status line under the portraits (same voice as the
-    ✦ loading screen's sub-text). It lets this ONE screen carry the whole
-    cast→opening-scene wait — cards stay visible while the ✦ pulses and the
-    sub-line narrates — instead of swapping to a separate loading screen.
+    This is the one waiting vocabulary for the whole generated flow (no separate
+    ✦-only loading screen): the button press paints it instantly and every
+    subsequent phase (design, base, expression bake, scene open) reuses it.
+
+    Args:
+        char_keys: per-card identifier (preset slug or display name).
+        resolved:  name -> CastMember (uses the neutral sprite) once baked.
+        sprite_paths: key -> image path for in-progress sprites (e.g. the base
+            portrait) shown before a full CastMember exists.
+        active:    index of the card currently being worked on (gets a pulse).
     """
+    resolved = resolved or {}
+    sprite_paths = sprite_paths or {}
     portraits = []
-    for key in char_keys:
+    for i, key in enumerate(char_keys):
         # Preset keys are lowercase slugs; custom names arrive display-ready
         name = key.capitalize() if key.islower() else key
         member = resolved.get(name)
-        if member:
+        uri = ""
+        if key in sprite_paths:
+            uri = data_uri(sprite_paths[key])
+        elif member:
             uri = data_uri(member.get_sprite("neutral"))
-            inner = (f'<img src="{uri}" alt="{name}">' if uri
-                     else f'<div class="pname">{name}</div>')
-            portraits.append(
-                f'<div class="portrait-wrap">'
-                f'<div class="vn-portrait">{inner}</div>'
-                f'<div class="pname">{name}</div></div>'
-            )
+        is_active = (active is not None and i == active)
+        cls = "vn-portrait" + (" active" if is_active else
+                               ("" if uri else " pending"))
+        if uri:
+            inner = f'<img src="{uri}" alt="{name}">'
+            label = f'<div class="pname">{name}</div>'
+        elif is_active:
+            inner = '<div class="casting-spinner">✦</div>'
+            label = f'<div class="pname">{name}</div>'
         else:
-            portraits.append(
-                f'<div class="portrait-wrap">'
-                f'<div class="vn-portrait pending">…</div>'
-                f'<div class="pname pending">?</div></div>'
-            )
+            inner = '…'
+            label = (f'<div class="pname">{name}</div>' if name and name != "?"
+                     else '<div class="pname pending">?</div>')
+        portraits.append(
+            f'<div class="portrait-wrap">'
+            f'<div class="{cls}">{inner}</div>{label}</div>'
+        )
 
     sub_html = f'<div class="vn-loading-sub">{sub}</div>' if sub else ""
     return f"""
