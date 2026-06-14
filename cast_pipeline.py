@@ -237,7 +237,11 @@ def _face_anchor(identity_or_tags: str) -> str:
 # anime-specific model (e.g. yolov8x6_animeface.pt) here.
 ANIME_FACE_MODEL = "bbox/face_yolov8n.pt"
 
-# How many times to regenerate the base (seed bump) if no anime face is found
+# How many times to regenerate the base (seed bump) if no anime face is found.
+# (face_yolov8n is reliable on this art locally — 200+ trials, 0 misses. The
+# Space's intermittent misses track the embed executor RE-INITIALISING between
+# ZeroGPU calls, not the detector, so the model/threshold are left as-proven;
+# the per-confirm bake split keeps any retries inside one proxy-token window.)
 FACE_GATE_RETRIES = 2
 
 # ── Preset character templates ────────────────────────────────────────
@@ -1369,10 +1373,28 @@ def _generate_via_comfy(specs: list[tuple[str, dict]]) -> list[CastMember]:
     return cast
 
 
+def _placeholder_marker(key: str) -> str:
+    """Sentinel that flags a sprite set as containing placeholder art."""
+    return os.path.join(_char_dir(key), ".placeholder")
+
+
+def _clear_placeholder_marker(key: str) -> None:
+    try:
+        os.remove(_placeholder_marker(key))
+    except OSError:
+        pass
+
+
 def _generated_complete(key: str) -> bool:
-    """True if a full generated sprite set already exists on disk
-    (for the current mode — fast and full are cached separately)."""
+    """True if a full, REAL generated sprite set already exists on disk
+    (for the current mode — fast and full are cached separately).
+
+    A set that fell back to placeholder boxes (e.g. a ZeroGPU-quota-throttled
+    bake) is not a reusable cache: the .placeholder marker forces a re-bake
+    next time rather than serving those boxes forever."""
     char_dir = _char_dir(key)
+    if os.path.exists(_placeholder_marker(key)):
+        return False
     return all(os.path.exists(os.path.join(char_dir, f"{key}_{e}.png"))
                for e in STANDARD_EXPRESSIONS)
 
@@ -1399,13 +1421,22 @@ def _generate_one_via_comfy(key: str, preset: dict, base_path: str = None) -> Ca
     expressions baked from it. The base is copied into the char dir if
     it isn't already there.
     """
-    if _generated_complete(key) and not os.getenv("ARS_FABULA_REGEN"):
+    # A freshly face-gated base (interactive Generate/Confirm) must drive a
+    # re-bake — never silently reuse a stale cached set that doesn't match the
+    # character the user just reviewed. Cross-session reuse still applies on the
+    # curated/preset path, where no fresh base is supplied.
+    have_fresh_base = bool(base_path and os.path.exists(base_path))
+    if (_generated_complete(key) and not os.getenv("ARS_FABULA_REGEN")
+            and not have_fresh_base):
         print(f"  [cast] Reusing generated sprites for {key} "
               f"(delete {_char_dir(key)}/ or set ARS_FABULA_REGEN=1 to re-bake)")
         return _load_generated_member(key, preset)
 
     char_dir = _char_dir(key)
     os.makedirs(char_dir, exist_ok=True)
+    # Starting a real bake — drop any stale placeholder marker; a failed
+    # expression below re-sets it via _make_placeholder_sprite.
+    _clear_placeholder_marker(key)
 
     # Step 1: Generate base (face-gated) — skipped if base_path provided and exists
     if base_path and os.path.exists(base_path):
@@ -1501,6 +1532,12 @@ def _make_placeholder_sprite(char_key: str, expr: str, member: CastMember) -> Op
         draw.text((member.sprite_width // 2, member.sprite_height // 2),
                   f"{char_key}\n{expr}", fill=(255, 255, 255, 255), anchor="mm")
         img.save(path)
+        # Taint the set so _generated_complete won't reuse these boxes as a
+        # real cache on a later run.
+        try:
+            open(_placeholder_marker(char_key), "w").close()
+        except OSError:
+            pass
         return path
     except ImportError:
         return None

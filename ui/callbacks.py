@@ -108,7 +108,8 @@ def make_callbacks(bg_provider: BackgroundProvider):
             char_dir = _char_dir(key)
             base_path = _generate_base_with_face_gate(key, preset, char_dir)
 
-            new_state = {"specs": specs, "idx": 0, "phase": "review", "fast": fast}
+            new_state = {"specs": specs, "idx": 0, "phase": "review", "fast": fast,
+                         "members": [], "warnings": []}
             screen = _review_screen_html(key, preset, base_path or "", 1, len(specs))
             info = f"Review: {preset.get('name', key)} · 1/{len(specs)}"
             yield (None, None, screen, {}, _cast_panel_html({}), "", info, None, "",
@@ -188,6 +189,12 @@ def make_callbacks(bg_provider: BackgroundProvider):
                 gr.skip(), gr.skip(), gr.skip(), info or message,
                 gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
 
+    def _members_to_cast(members) -> dict:
+        """name -> CastMember for characters baked on prior confirms, so the
+        casting cards show them resolved (neutral sprite) as the bake walks the
+        roster. Characters not yet baked fall back to their base via sprite_paths."""
+        return {m.character.name: m for m in members}
+
     def _base_sprites(specs) -> dict:
         """key -> base portrait path for any character whose base is already on
         disk, so the casting cards show the sprites baked so far (not just …)."""
@@ -230,68 +237,63 @@ def make_callbacks(bg_provider: BackgroundProvider):
         specs = casting_state["specs"]
         idx = casting_state["idx"]
         fast = casting_state.get("fast", False)
+        # Members baked on PRIOR confirms ride along in the casting state.
+        members = list(casting_state.get("members", []))
+        bake_warnings = list(casting_state.get("warnings", []))
+        ckeys = [k for k, _ in specs]
+
+        from cast_pipeline import (_generate_base_with_face_gate, _generate_one_via_comfy,
+                                   _char_dir, set_fast_generation, _placeholder_member)
+        set_fast_generation(fast)
 
         # Fold the (possibly edited) prompt + description into the preset
         key, preset = specs[idx]
         _apply_review_edits(preset, key, casting_prompt, casting_desc, reseed=True)
 
-        # Advance to next character
+        # Bake THIS character's expressions NOW — in this confirm's OWN request
+        # (= its own ZeroGPU proxy token). Baking the whole cast in the final
+        # callback ran ~10 min and outlived the token (the last character died
+        # with "Expired ZeroGPU proxy token"); per-confirm baking keeps each
+        # character's GPU work inside a fresh token. Baking after confirm (not at
+        # review) also means a Redo only re-rolls the base, never re-bakes.
+        sname = preset.get("name", key)
+        yield _casting_step(ckeys, _members_to_cast(members),
+                            f"Baking {sname}…", f"finalizing {sname}'s expressions",
+                            active=idx, sprite_paths=_base_sprites(specs),
+                            info=f"Baking {sname} · {idx + 1}/{len(specs)}")
+        base = os.path.join(_char_dir(key), f"{key}_base.png")
+        try:
+            member = _generate_one_via_comfy(key, preset,
+                                             base_path=(base if os.path.exists(base) else ""))
+            members.append(member)
+        except Exception as e:
+            print(f"  [cast] Expression bake failed for {key}: {e}")
+            members.append(_placeholder_member(key, preset))
+            bake_warnings.append(sname)
+
+        # More characters — generate the next base and show its review.
         next_idx = idx + 1
         if next_idx < len(specs):
-            # More characters — generate next base
-            from cast_pipeline import (_generate_base_with_face_gate, _char_dir,
-                                       set_fast_generation)
-            set_fast_generation(fast)
-
             next_key, next_preset = specs[next_idx]
             next_name = next_preset.get("name", next_key)
-            ckeys = [k for k, _ in specs]
-            yield _casting_step(ckeys, {}, f"Sketching {next_name}…",
-                                "drawing the next portrait", active=next_idx,
-                                sprite_paths=_base_sprites(specs),
+            yield _casting_step(ckeys, _members_to_cast(members),
+                                f"Sketching {next_name}…", "drawing the next portrait",
+                                active=next_idx, sprite_paths=_base_sprites(specs),
                                 info=f"Generating {next_name} · {next_idx + 1}/{len(specs)}")
-            char_dir = _char_dir(next_key)
-            base_path = _generate_base_with_face_gate(next_key, next_preset, char_dir)
-
-            new_state = {"specs": specs, "idx": next_idx, "phase": "review", "fast": fast}
-
+            base_path = _generate_base_with_face_gate(next_key, next_preset,
+                                                      _char_dir(next_key))
+            new_state = {"specs": specs, "idx": next_idx, "phase": "review",
+                         "fast": fast, "members": members, "warnings": bake_warnings}
             screen = _review_screen_html(next_key, next_preset, base_path or "",
                                          next_idx + 1, len(specs))
-            info = f"Review: {next_preset.get('name', next_key)} · {next_idx + 1}/{len(specs)}"
-
+            info = f"Review: {next_name} · {next_idx + 1}/{len(specs)}"
             yield (None, None, screen, {}, _cast_panel_html({}), "", info, None, "",
                    [], 0, new_state)
             return
 
-        # All confirmed — bake expressions, swap VRAM, start the VN
-        from cast_pipeline import (_generate_one_via_comfy, _char_dir,
-                                   comfy_free_vram, set_fast_generation)
+        # Last character baked — assemble the cast, swap VRAM, open the scene.
+        from cast_pipeline import comfy_free_vram
         from model_client import ensure_llm, ModelConfig
-
-        set_fast_generation(fast)
-
-        # Bake expressions for all characters (UNET still hot from base gen)
-        members = []
-        bake_warnings: list[str] = []
-        ckeys = [k for k, _ in specs]
-        for i, (skey, spreset) in enumerate(specs):
-            sname = spreset.get("name", skey)
-            yield _casting_step(ckeys, {}, f"Baking expressions — {sname}…",
-                                f"character {i + 1} of {len(specs)}", active=i,
-                                sprite_paths=_base_sprites(specs),
-                                info=f"Baking expressions · {i + 1}/{len(specs)}")
-            char_dir = _char_dir(skey)
-            base = os.path.join(char_dir, f"{skey}_base.png")
-            try:
-                member = _generate_one_via_comfy(skey, spreset,
-                                                 base_path=(base if os.path.exists(base) else ""))
-                members.append(member)
-            except Exception as e:
-                print(f"  [cast] Expression bake failed for {skey}: {e}")
-                # Fall back to placeholder
-                from cast_pipeline import _placeholder_member
-                members.append(_placeholder_member(skey, spreset))
-                bake_warnings.append(sname)
 
         cast = {m.character.name: m for m in members}
         if not cast:

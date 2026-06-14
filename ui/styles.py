@@ -58,11 +58,13 @@ CSS = """
   background: var(--bg-void) !important;
   color: var(--text-primary) !important;
   font-family: var(--font-ui) !important;
-  /* Size the frame to the LARGEST 16:9 that fits the viewport: as wide as
-     ~90vw, but capped at 1700px AND at the width whose 16:9 height is ~88vh
-     (88vh × 16/9 ≈ 156vh). The height cap is what reclaims the empty band that
-     appeared below an 80%-width frame on a 16:9 screen. */
-  width: min(90vw, 1900px, 156vh) !important;
+  /* Size the frame to the LARGEST 16:9 that fits the viewport: nearly full
+     width (~97vw) and full height — the width whose 16:9 height is ~97vh
+     (97vh × 16/9 ≈ 173vh) — so the stage fills the screen instead of floating
+     in a band of empty space. (True edge-to-edge would mean dropping the 16:9
+     aspect on .vn-screen, which re-proportions the sprite framing — kept 16:9
+     here; see note in chat.) */
+  width: min(97vw, 2400px, 173vh) !important;
   min-width: 720px !important;       /* prevent collapse on small viewports */
   margin: 0 auto !important;
 }
@@ -407,10 +409,10 @@ body.cast-setup-active .vn-cast-setup {
   letter-spacing: 0.15em;
   animation: vnPulse 1.6s ease infinite;
 }
-.vn-casting .portraits { display: flex; gap: 24px; }
+.vn-casting .portraits { display: flex; gap: 3cqw; }
 .vn-portrait {
-  width: clamp(82px, 9cqw, 130px); height: clamp(120px, 13cqw, 190px);
-  border-radius: 6px;
+  width: clamp(120px, 14cqw, 230px); height: clamp(170px, 20cqw, 330px);
+  border-radius: 8px;
   border: 1px solid var(--border-mid);
   background: var(--bg-surface);
   overflow: hidden;
@@ -1536,38 +1538,13 @@ body.vn-waiting .vn-dialogue::after {
   animation: vnPulse 1.2s ease infinite;
 }
 
-/* Universal PRE-SCENE waiting overlay — every wait that isn't an in-scene
-   turn (Generate Cast, Confirm/Redo a character, curated Start, menu Load)
-   shows the SAME instant scrim + pulsing ✦ over the whole stage, regardless of
-   which screen is underneath (title, casting cards, or the review screen).
-   This is what makes pressing a button give immediate feedback and stops the
-   "thrown back to the main screen with nothing happening" read: the moment JS
-   adds body.vn-waiting, the canvas is covered by a loading surface — it does
-   NOT depend on the server's first render landing. The observer clears it when
-   the next screen arrives. In-scene turns (body.vn-playing) are excluded so
-   they keep the lighter dialogue-✦ + choice-dim treatment below.
-   #stage is position:relative, so the overlay anchors to the canvas. */
-body.vn-waiting:not(.vn-playing) #stage { pointer-events: none !important; }
-body.vn-waiting:not(.vn-playing) #stage::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(13, 13, 26, 0.88);
-  z-index: 40;
-}
-body.vn-waiting:not(.vn-playing) #stage::after {
-  content: '✦';
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-accent);
-  font-size: 2.6rem;
-  z-index: 41;
-  animation: vnPulse 1.2s ease infinite;
-  pointer-events: none;
-}
+/* PRE-SCENE waiting (Generate Cast, Confirm/Redo, curated Start) does NOT use
+   an opaque scrim — that hid the very cards it was meant to show. Instead the
+   casting CARDS screen is the loading surface, painted into the canvas
+   client-side the instant the button is pressed (see paintCasting() in the
+   onload JS), independent of the server's first render or intermediate
+   streaming. So there is no body.vn-waiting #stage overlay here; vn-waiting now
+   only drives the lighter in-scene dialogue-✦ + choice-dim treatment above. */
 
 /* ── Kill Gradio's queue-progress chrome inside the stage ── Gradio overlays
    each output component with .wrap.full (a cover) + .eta-bar (a dark,
@@ -1667,6 +1644,11 @@ const _typewriterObserver = new MutationObserver(function() {
     // ('1' = typing now, '0' = done — neither must retrigger, or the
     // typewriter's own text mutations would restart it in a loop.)
     const screen = document.querySelector('.vn-screen');
+    // Remember the most recent REAL server casting screen (cards with the
+    // sprites baked so far) so Confirm/Redo can re-show it instantly. Skeletons
+    // we painted client-side carry data-skeleton — don't stash those.
+    const _cast = screen && screen.querySelector('.vn-casting:not([data-skeleton])');
+    if (_cast) window._vnLastCasting = screen.outerHTML;
     if (screen && screen.getAttribute('data-typing') === 'pending') {
         // A fresh render arrived — the turn the user was waiting on is here.
         if (document.body.classList.contains('vn-waiting')) setWaiting(false);
@@ -1763,6 +1745,78 @@ const setWaiting = (on) => {
         }, 120000);
     }
 };
+
+// ── Client-side casting loading surface ────────────────────────────
+// The cards screen IS the loading vocabulary for every pre-scene wait. We
+// paint it into the canvas the instant a casting button is pressed —
+// synchronously, before/independent of the hidden Gradio button — so the FIRST
+// click always shows the cards (never a blank title flash or a bare ✦), even
+// when the Space's queue swallows the first event or streams no intermediate
+// yields. The server's own renders (cards-with-sprites, then the review) carry
+// no data-skeleton marker and replace this wholesale via the same
+// `#stage .prose` innerHTML that Gradio writes to.
+const _stageProse = () => {
+    const scr = document.querySelector('.vn-screen');
+    if (scr && scr.parentElement && scr.parentElement.classList.contains('prose'))
+        return scr.parentElement;
+    const stage = document.querySelector('#stage');
+    return stage ? stage.querySelector('.prose') : null;
+};
+
+const _castingSkeletonHTML = (names, message, sub, active) => {
+    const cards = (names || []).map(function(nm, i) {
+        const isActive = (active != null && i === active);
+        const cls = 'vn-portrait ' + (isActive ? 'active' : 'pending');
+        const inner = isActive ? '<div class="casting-spinner">✦</div>' : '…';
+        const safe = (nm && nm !== '?') ? String(nm).replace(/[<>&]/g, '') : '';
+        const label = safe
+            ? '<div class="pname">' + safe + '</div>'
+            : '<div class="pname pending">?</div>';
+        return '<div class="portrait-wrap"><div class="' + cls + '">'
+            + inner + '</div>' + label + '</div>';
+    }).join('');
+    const subHtml = sub ? '<div class="vn-loading-sub">' + sub + '</div>' : '';
+    return '<div class="vn-screen"><div class="vn-casting" data-skeleton="1">'
+        + '<div class="casting-title">✦ ' + (message || 'Assembling your cast…')
+        + '</div><div class="portraits">' + cards + '</div>' + subHtml
+        + '</div></div>';
+};
+
+// Paint a casting surface into the canvas right now. opts.html (the last real
+// server cards, with sprites baked so far) takes priority; otherwise a skeleton
+// is built from opts.names. The painted .vn-casting always carries
+// data-skeleton="1" so fireCasting() can tell whether the server has answered.
+const paintCasting = (opts) => {
+    const prose = _stageProse();
+    if (!prose) return;
+    opts = opts || {};
+    prose.innerHTML = opts.html || _castingSkeletonHTML(
+        opts.names || ['?', '?', '?'], opts.message, opts.sub,
+        (opts.active != null) ? opts.active : 0);
+    const node = prose.querySelector('.vn-casting');
+    if (node) node.setAttribute('data-skeleton', '1');
+    // When re-showing CAPTURED server cards (opts.html, used by Confirm/Redo to
+    // keep the sprites baked so far), their title/sub/active reflect the PREVIOUS
+    // action — refresh them so e.g. Confirm doesn't read "Re-sketching Marie".
+    if (opts.html && opts.message) {
+        const t = prose.querySelector('.casting-title');
+        if (t) t.textContent = '✦ ' + opts.message;
+        const s = prose.querySelector('.vn-loading-sub');
+        if (s) s.textContent = opts.sub || '';
+        prose.querySelectorAll('.vn-portrait.active').forEach(function(p) {
+            p.classList.remove('active');
+        });
+    }
+};
+
+// Fire a hidden Gradio button for a casting action. A SINGLE fire — no retry:
+// the instant client-side skeleton above already removes the "first click does
+// nothing" read that used to make people click twice, so a button-press always
+// starts exactly one run. (An auto-retry keyed on the skeleton still being up
+// would double-fire here, because the Space streams its intermediate cards
+// yields slowly — the skeleton can linger past any grace window while a single
+// real run is busy generating, and re-firing would start a duplicate.)
+const fireCasting = (sel) => { clickHidden(sel); };
 
 // Submit the in-canvas free-text capsule via the hidden Gradio bridge.
 const submitFreeText = (input) => {
@@ -1962,11 +2016,12 @@ document.addEventListener('click', function(e) {
             // own button. (Curated has no setup — start immediately.)
             document.body.classList.add('cast-setup-active');
         } else {
-            // Curated start runs the casting beat + opening turn — pulse ✦
-            // until the first render lands.
-            setWaiting(true);
+            // Curated start runs the casting beat + opening turn — paint the
+            // cards surface instantly (names fill in from the server's yields).
+            paintCasting({ message: 'Assembling your cast…',
+                           sub: 'warming up the studio', active: 0 });
             // 150ms lets the preset input event reach the server first
-            setTimeout(function() { clickHidden('#start-btn-hidden'); }, 150);
+            setTimeout(function() { fireCasting('#start-btn-hidden'); }, 150);
         }
         return;
     }
@@ -1995,12 +2050,20 @@ document.addEventListener('click', function(e) {
                 hiddenFast.dispatchEvent(new Event('change', { bubbles: true }));
             }
         }
-        // Hide cast setup, reveal the canvas — pulse ✦ until the casting
-        // screen render arrives.
+        // Hide cast setup and paint the CARDS loading surface instantly from
+        // the entered names — this is the loading vocabulary, shown on the
+        // first click with no dependency on the server's first render.
         document.body.classList.remove('cast-setup-active');
-        setWaiting(true);
-        // Fire the hidden Generate Cast button with a small delay for input propagation
-        setTimeout(function() { clickHidden('#generate-cast-btn'); }, 150);
+        const names = [...document.querySelectorAll('.vn-cs-card')].map(function(card) {
+            const el = card.querySelector('[data-cs-field="name"]');
+            return (el && el.value.trim()) || '?';
+        });
+        window._vnRoster = names;
+        paintCasting({ names: names, message: 'Assembling your cast…',
+                       sub: 'warming up the studio', active: 0 });
+        // Fire the hidden Generate Cast button (delay lets the input events
+        // bridged above reach the server first); re-fires once if swallowed.
+        setTimeout(function() { fireCasting('#generate-cast-btn'); }, 150);
         return;
     }
     if (e.target.closest('.vn-cs-back')) {
@@ -2103,11 +2166,19 @@ document.addEventListener('click', function(e) {
         if (promptEl) setHiddenVal('#casting-prompt-box', promptEl.value);
         const descEl = document.querySelector('#review-desc-text');
         if (descEl) setHiddenVal('#casting-desc-box', descEl.value);
-        // Instant ✦ feedback; the server's own loading screen takes over
-        // when the callback's first yield lands (observer clears the flag).
-        setWaiting(true);
+        // Instant CARDS feedback: re-show the last real casting screen (cards
+        // with the sprites baked so far) if we captured one, else a skeleton
+        // from the roster. The server's next yield replaces it.
+        const _castMsg = reviewConfirm ? 'Bringing your cast to life…'
+                                       : 'Re-sketching…';
+        const _castSub = reviewConfirm ? 'one moment'
+                                       : 'the artist is trying again';
+        paintCasting(window._vnLastCasting
+            ? { html: window._vnLastCasting, message: _castMsg, sub: _castSub }
+            : { names: window._vnRoster || ['?', '?', '?'],
+                message: _castMsg, sub: _castSub });
         setTimeout(function() {
-            clickHidden(reviewConfirm ? '#casting-confirm-btn' : '#casting-redo-btn');
+            fireCasting(reviewConfirm ? '#casting-confirm-btn' : '#casting-redo-btn');
         }, 120);
         return;
     }
