@@ -290,9 +290,11 @@ if __name__ == "__main__":
         if os.getenv("ARS_FABULA_COMFY_MODE") == "embed":
             try:
                 import comfy_embed
-                comfy_embed.stage_models()
+                comfy_embed.stage_comfyui()   # clone ComfyUI source (submodules
+                                              # don't materialise via hf upload)
+                comfy_embed.stage_models()    # download the diffusion weights
             except Exception as e:
-                print(f"[space] comfy model staging failed ({e}); "
+                print(f"[space] comfy staging failed ({e}); "
                       f"cast will fall back to curated")
         port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
 

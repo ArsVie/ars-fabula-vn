@@ -33,7 +33,12 @@ fi
 # keep the root README out of the tree upload and push the variant over it.
 EXTRA_EXCLUDES=()
 if [ "$MODE" = "zerogpu" ]; then
-    EXTRA_EXCLUDES=(--exclude "README.md" --exclude "Dockerfile")
+    # third_party/ holds the ComfyUI submodules; hf upload can't materialise
+    # submodule contents in a Gradio Space's runtime checkout, so we DON'T
+    # upload them — comfy_embed.stage_comfyui() clones the source at startup
+    # instead (same self-heal pattern as the weight downloads).
+    EXTRA_EXCLUDES=(--exclude "README.md" --exclude "Dockerfile"
+                    --exclude "third_party/*" --exclude "third_party/**")
 fi
 
 # Runtime files only: no git/venv/caches, no dev tools or tests (the

@@ -64,6 +64,23 @@ CUSTOM_NODES_SRC = os.getenv(
 )
 CUSTOM_NODES = ["ComfyUI-GGUF", "comfyui-impact-pack", "ComfyUI-Impact-Subpack"]
 
+# Git sources for runtime staging on the Space. In the repo, ComfyUI + these
+# nodes are git submodules under third_party/ (great for local/Docker dev), but
+# `hf upload` does NOT materialise submodule contents in a Gradio Space's
+# runtime checkout. So on the Space we CLONE them at startup — the same
+# self-heal pattern as hf_hub_download for the weights. Commits match the
+# Dockerfile pins. (None = default branch HEAD, as the Dockerfile does.)
+COMFY_GIT = (os.getenv("ARS_FABULA_COMFY_REPO",
+                       "https://github.com/comfyanonymous/ComfyUI"),
+             "b6332446")
+CUSTOM_NODE_GIT = {
+    "ComfyUI-GGUF": ("https://github.com/city96/ComfyUI-GGUF", None),
+    "comfyui-impact-pack": ("https://github.com/ltdrdata/ComfyUI-Impact-Pack", None),
+    "ComfyUI-Impact-Subpack": (
+        "https://github.com/ltdrdata/ComfyUI-Impact-Subpack",
+        "50c7b71a6a224734cc9b21963c6d1926816a97f1"),
+}
+
 # @spaces.GPU duration (seconds) for one workflow run. The first call also
 # loads the diffusion stack (~6GB GGUF + encoder + VAE + SAM), so it is the
 # slowest; later calls reuse the in-RAM model cache. Bump via env if the first
@@ -137,6 +154,17 @@ def health() -> bool:
     if not os.path.isdir(COMFY_DIR) or not os.path.exists(
             os.path.join(COMFY_DIR, "nodes.py")):
         print(f"[comfy-embed] health: ComfyUI checkout not found at {COMFY_DIR}")
+        try:
+            tp = os.path.join(PROJECT_DIR, "third_party")
+            print(f"[comfy-embed]   PROJECT_DIR={PROJECT_DIR} listdir="
+                  f"{sorted(os.listdir(PROJECT_DIR))[:40]}")
+            print(f"[comfy-embed]   third_party exists={os.path.isdir(tp)}"
+                  + (f" listdir={sorted(os.listdir(tp))}" if os.path.isdir(tp) else ""))
+            cdir = os.path.join(tp, "comfyui")
+            if os.path.isdir(cdir):
+                print(f"[comfy-embed]   comfyui listdir(20)={sorted(os.listdir(cdir))[:20]}")
+        except Exception as e:
+            print(f"[comfy-embed]   (listdir failed: {e})")
         return False
     missing = _missing_models()
     if missing:
@@ -149,6 +177,61 @@ def health() -> bool:
 # ═══════════════════════════════════════════════════════════════════════
 # Model staging (Gradio SDK Space has no Dockerfile to bake weights in)
 # ═══════════════════════════════════════════════════════════════════════
+
+def _git_clone(url: str, dest: str, commit: Optional[str] = None) -> bool:
+    """Clone `url` into `dest` (merging into an existing dir without clobbering,
+    so a pre-existing models/ survives), optionally checking out `commit`.
+    Idempotent: a no-op if `dest` already looks populated."""
+    import subprocess
+    # "Populated" means the source we NEED is present — not merely a .git
+    # pointer (HF may leave an empty submodule mount with just a .git file).
+    if os.path.isdir(dest) and any(
+            os.path.exists(os.path.join(dest, m)) for m in ("nodes.py", "__init__.py")):
+        return True
+    tmp = dest.rstrip("/") + "__clone"
+    if os.path.isdir(tmp):
+        shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        subprocess.run(["git", "clone", "--filter=blob:none", "--quiet", url, tmp],
+                       check=True, timeout=600)
+        if commit:
+            subprocess.run(["git", "-C", tmp, "checkout", "--quiet", commit],
+                           check=True, timeout=120)
+    except Exception as e:
+        print(f"[comfy-embed] clone failed {url}: {e}")
+        shutil.rmtree(tmp, ignore_errors=True)
+        return False
+    # Merge tmp/* into dest (keep any files dest already has, e.g. models/).
+    os.makedirs(dest, exist_ok=True)
+    for entry in os.listdir(tmp):
+        src_e, dst_e = os.path.join(tmp, entry), os.path.join(dest, entry)
+        if not os.path.exists(dst_e):
+            shutil.move(src_e, dst_e)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return True
+
+
+def stage_comfyui() -> bool:
+    """Ensure the ComfyUI source + custom nodes exist on disk (clone if missing).
+
+    Needed on the Gradio Space, where the third_party submodules don't
+    materialise from `hf upload`. No-op locally / on Docker where the checkout
+    (or ARS_FABULA_COMFY_DIR) already has them. Returns True if nodes.py is
+    present afterward."""
+    if not os.path.exists(os.path.join(COMFY_DIR, "nodes.py")):
+        print(f"[comfy-embed] cloning ComfyUI {COMFY_GIT[1] or 'HEAD'} → {COMFY_DIR}")
+        os.makedirs(os.path.dirname(COMFY_DIR) or ".", exist_ok=True)
+        _git_clone(COMFY_GIT[0], COMFY_DIR, COMFY_GIT[1])
+    os.makedirs(CUSTOM_NODES_SRC, exist_ok=True)
+    for name, (url, commit) in CUSTOM_NODE_GIT.items():
+        dest = os.path.join(CUSTOM_NODES_SRC, name)
+        if not os.path.exists(os.path.join(dest, "__init__.py")):
+            print(f"[comfy-embed] cloning custom node {name}")
+            _git_clone(url, dest, commit)
+    ok = os.path.exists(os.path.join(COMFY_DIR, "nodes.py"))
+    print(f"[comfy-embed] ComfyUI source {'ready' if ok else 'MISSING'}")
+    return ok
+
 
 def stage_models() -> bool:
     """Download the Anima/SAM/YOLO weights into ComfyUI's model dirs.
