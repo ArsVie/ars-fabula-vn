@@ -320,13 +320,13 @@ EXPRESSION_TAGS = {
     # "expressionless" with relaxed brows + closed mouth so it stays flat, not cross.
     "neutral": "expressionless, calm, looking at viewer, relaxed, closed mouth, level eyebrows",
     # SMILE = Passive Contentment (Eyes wide and calm, subtle lip curve)
-    "smile": "gentle smile, parted lips, pleasant expression, calm eyes, looking at viewer, serene",
+    "smile": "gentle smile, pleasant expression, calm eyes, looking at viewer, serene",
     # LAUGH = Dynamic Joy (Eyes naturally squinting/crinkling from a wide, open-mouthed grin)
     "laugh": "joyful laughter, wide open mouth, laughing expression, squinting eyes, crinkling eyes, big happy grin, radiant smile, elevated cheeks",
-    "sad": "sad expression, deep frown, downturned mouth, worried eyebrows, downcast eyes, casting eyes downward, distressed",
+    "sad": "sad expression, crying, teary eyes, trembling lip, frowning, downturned mouth, distressed",
     "angry": "angry glare, slanting v-shaped eyebrows, furrowed brow, gritting teeth, tight jaw, intense eyes, looking at viewer",
     "surprised": "surprised expression, wide-eyed, shocked, shrunken pupils, slightly open gasping mouth, raised elevated eyebrows",
-    "embarrassed": "embarrassed, heavy blush, (@_@), spiral eyes, averted eyes, flying sweatdrops, nervous",
+    "embarrassed": "embarrassed, side glance, heavy blush, (@_@), spiral eyes, averted eyes, nervous, awkward, sweatdrop",
 }
 
 # Per-expression NEGATIVES, appended to the plain NEGATIVE for the
@@ -335,10 +335,12 @@ EXPRESSION_TAGS = {
 # closed-mouth smile, sad as neutral-pleasant, surprised as calm) — without
 # constraining the rest of the set.
 EXPRESSION_NEGATIVE_TAGS = {
+    "smile": "expressionless, neutral mouth, frown, straight mouth",
     "laugh": "closed mouth, expressionless, neutral expression, frown, slight smile",
     "sad": "smile, grin, laughing, happy, cheerful, expressionless",
     "surprised": "smile, expressionless, calm, half-closed eyes, closed eyes, closed mouth",
     "angry": "smile, happy, expressionless, calm",
+    "embarrassed": "confident, bold, composed, staring",
 }
 
 # FaceDetailer strength — the sheet's note: 0.4–0.7, lower = subtler.
@@ -351,6 +353,30 @@ EXPRESSION_DENOISE_OVERRIDES = {
     "laugh": 0.7,
     "sad": 0.68,
     "surprised": 0.7,
+}
+
+# Per-character fine-tuning for the curated promotional trio (marie/yuki/sakura).
+# Exact prompts/settings recovered from the generated expression-sheet metadata —
+# these beat the generic preset for specific (character, expression) pairs.
+# Keyed by character_key; only the listed pairs deviate, everything else uses the
+# defaults above. Custom/generated characters never match, so they're unaffected.
+#   tags:           replaces EXPRESSION_TAGS[expr] (anchor + style still prepended)
+#   negative_extra: appended after EXPRESSION_NEGATIVE_TAGS[expr]
+#   denoise:        replaces the resolved denoise
+CHARACTER_EXPRESSION_OVERRIDES = {
+    "marie": {
+        "smile": {"tags": "smiling, soft gentle smile, upturned lips, "
+                          "warm expression, pleasant eyes, looking at viewer, serene"},
+    },
+    "sakura": {
+        "laugh": {
+            "tags": "joyful laughter, open mouth smile, laughing expression, "
+                    "happy grin, smiling eyes, raised cheeks, cheerful expression",
+            "negative_extra": "deformed eyes, asymmetrical eyes, extra pupils, "
+                              "wonky eyes, lazy eye",
+            "denoise": 0.62,
+        },
+    },
 }
 
 # Model files (must match the names installed in ComfyUI — taken verbatim
@@ -889,23 +915,30 @@ def _build_expression_workflow(character_key: str, expr_name: str,
     out_path = os.path.join(_char_dir(character_key),
                             f"{character_key}_{expr_name}.png")
     anchor_part = f"{anchor}, " if anchor else ""
+
+    # Per-character fine-tuning override (curated trio): swap tags / add extra
+    # negatives / change denoise for specific (character, expression) pairs.
+    ov = CHARACTER_EXPRESSION_OVERRIDES.get(character_key, {}).get(expr_name, {})
+    if ov.get("tags"):
+        expr_tags = ov["tags"]
     expr_prompt = f"{QUALITY}, {STYLE_TAGS}. {anchor_part}{expr_tags}"
 
     # Per-expression strength + negatives (see EXPRESSION_DENOISE_OVERRIDES /
     # EXPRESSION_NEGATIVE_TAGS): big-delta expressions inpaint harder and
     # negate their drift-back-to-calm failure mode.
-    denoise = EXPRESSION_DENOISE_OVERRIDES.get(expr_name, EXPRESSION_DENOISE)
-    expr_negative = NEGATIVE
-    if expr_name in EXPRESSION_NEGATIVE_TAGS:
-        expr_negative = f"{NEGATIVE}, {EXPRESSION_NEGATIVE_TAGS[expr_name]}"
+    denoise = ov.get("denoise",
+                     EXPRESSION_DENOISE_OVERRIDES.get(expr_name, EXPRESSION_DENOISE))
+    neg_extra = [t for t in (EXPRESSION_NEGATIVE_TAGS.get(expr_name),
+                             ov.get("negative_extra")) if t]
+    expr_negative = f"{NEGATIVE}, {', '.join(neg_extra)}" if neg_extra else NEGATIVE
 
-    # Unified FaceDetailer params from the validated expression sheet (euler,
+    # Unified FaceDetailer params from the validated expression sheet (er_sde,
     # 15 steps, guide_size 256, bbox_threshold 0.5).
     _fd_inputs = {
         "image": ["10", 0], "model": ["44", 0], "clip": ["45", 0], "vae": ["15", 0],
         "guide_size": 256, "guide_size_for": True, "max_size": 384,
         "seed": seed, "steps": 15, "cfg": 4.0,
-        "sampler_name": "euler", "scheduler": SCHEDULER,
+        "sampler_name": "er_sde", "scheduler": SCHEDULER,
         "positive": ["11", 0], "negative": ["12", 0],
         "denoise": denoise, "feather": 15,
         "noise_mask": True, "force_inpaint": True,
