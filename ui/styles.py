@@ -1536,24 +1536,26 @@ body.vn-waiting .vn-dialogue::after {
   animation: vnPulse 1.2s ease infinite;
 }
 
-/* Waiting from the TITLE screen (Generate Cast, curated Start, menu Load):
-   there is no text box to host the ✦, and the menu must not stay clickable
-   while generation spins up — lock it, dim it, and pulse a big centered ✦
-   the user can't miss. */
-body.vn-waiting .vn-title-screen { pointer-events: none !important; }
-/* ::before is a static near-opaque scrim that hides the menu beneath — the
-   screen visibly leaves its interactive state the moment the wait starts.
-   (A child-dimming opacity rule was tried first but Gradio's style pipeline
-   wouldn't let a stylesheet !important opacity land on these nodes; the
-   scrim is sturdier anyway.) ::after is the pulsing ✦ on top of it. */
-body.vn-waiting .vn-title-screen::before {
+/* Universal PRE-SCENE waiting overlay — every wait that isn't an in-scene
+   turn (Generate Cast, Confirm/Redo a character, curated Start, menu Load)
+   shows the SAME instant scrim + pulsing ✦ over the whole stage, regardless of
+   which screen is underneath (title, casting cards, or the review screen).
+   This is what makes pressing a button give immediate feedback and stops the
+   "thrown back to the main screen with nothing happening" read: the moment JS
+   adds body.vn-waiting, the canvas is covered by a loading surface — it does
+   NOT depend on the server's first render landing. The observer clears it when
+   the next screen arrives. In-scene turns (body.vn-playing) are excluded so
+   they keep the lighter dialogue-✦ + choice-dim treatment below.
+   #stage is position:relative, so the overlay anchors to the canvas. */
+body.vn-waiting:not(.vn-playing) #stage { pointer-events: none !important; }
+body.vn-waiting:not(.vn-playing) #stage::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: rgba(13, 13, 26, 0.86);
+  background: rgba(13, 13, 26, 0.88);
   z-index: 40;
 }
-body.vn-waiting .vn-title-screen::after {
+body.vn-waiting:not(.vn-playing) #stage::after {
   content: '✦';
   position: absolute;
   inset: 0;
@@ -1561,9 +1563,10 @@ body.vn-waiting .vn-title-screen::after {
   align-items: center;
   justify-content: center;
   color: var(--text-accent);
-  font-size: 2.2rem;
+  font-size: 2.6rem;
   z-index: 41;
   animation: vnPulse 1.2s ease infinite;
+  pointer-events: none;
 }
 
 /* ── Kill Gradio's queue-progress chrome inside the stage ── Gradio overlays

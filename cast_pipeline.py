@@ -636,11 +636,19 @@ def _comfy_run(workflow: dict, client_id: str,
     """Run a workflow and return its first-image info dict, via whichever
     transport COMFY_MODE selects. Unifies the http submit+wait pair and the
     in-process executor so the call sites are transport-agnostic."""
-    if COMFY_MODE == "embed":
-        import comfy_embed
-        return comfy_embed.run_workflow(workflow, client_id)
-    pid = _comfy_submit(workflow, client_id)
-    return _comfy_wait(pid, timeout=timeout)
+    try:
+        if COMFY_MODE == "embed":
+            import comfy_embed
+            return comfy_embed.run_workflow(workflow, client_id)
+        pid = _comfy_submit(workflow, client_id)
+        return _comfy_wait(pid, timeout=timeout)
+    except Exception as e:
+        # A transport/connection failure (no server, broken pipe, OOM) must not
+        # crash the casting generator — callers treat None as "generation
+        # failed" and surface a Redo, never a 500.
+        print(f"  [cast] ComfyUI run failed for '{client_id}': "
+              f"{type(e).__name__}: {e}")
+        return None
 
 
 def _comfy_fetch_image(img_info: dict, dest_path: str) -> Optional[str]:
