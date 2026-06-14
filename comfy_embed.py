@@ -130,11 +130,20 @@ def output_dir() -> str:
 def health() -> bool:
     """True if embed mode can plausibly run: the ComfyUI checkout exists and
     all required model files are staged. Deliberately cheap — does NOT import
-    torch or ComfyUI (that happens lazily under @spaces.GPU on first run)."""
+    torch or ComfyUI (that happens lazily under @spaces.GPU on first run).
+
+    Logs the specific reason on failure (the gate that decides curated-vs-live
+    on the Space), so a fallback is never silent/mysterious in the logs."""
     if not os.path.isdir(COMFY_DIR) or not os.path.exists(
             os.path.join(COMFY_DIR, "nodes.py")):
+        print(f"[comfy-embed] health: ComfyUI checkout not found at {COMFY_DIR}")
         return False
-    return not _missing_models()
+    missing = _missing_models()
+    if missing:
+        print(f"[comfy-embed] health: {len(missing)} model file(s) not staged: "
+              f"{missing}")
+        return False
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════
