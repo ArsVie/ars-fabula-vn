@@ -430,6 +430,35 @@ body.cast-setup-active .vn-cast-setup {
   0%, 100% { box-shadow: 0 0 0 1px var(--border-accent), 0 0 12px -6px var(--border-accent); }
   50%      { box-shadow: 0 0 0 1px var(--border-accent), 0 0 22px -2px var(--border-accent); }
 }
+/* Coarse generation progress bar (under the casting title). The fill width is
+   honest roster-level progress; the moving shimmer keeps it alive during the
+   long blocking ComfyUI bake, when the width can't update mid-call. */
+.vn-castbar {
+  width: clamp(180px, 34cqw, 460px);
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+.vn-castbar > i {
+  display: block; height: 100%;
+  width: 2%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--border-mid), var(--text-accent));
+  transition: width 0.6s ease;
+  position: relative;
+  overflow: hidden;
+}
+.vn-castbar > i::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.38), transparent);
+  animation: castbarShimmer 1.3s linear infinite;
+}
+@keyframes castbarShimmer {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
 /* The ✦ start-symbol shown inside the active card before its sprite exists. */
 .casting-spinner {
   font-size: clamp(1.4rem, 2.4cqw, 2.2rem);
@@ -1636,6 +1665,70 @@ function completeTypewriter(screen) {
     screen.setAttribute('data-typing', '0');
 }
 
+// ── Background music ───────────────────────────────────────────
+// A persistent pair of <audio> elements on <body> (so they survive the
+// destructive per-beat re-render of the canvas). The scene root carries a
+// data-bgm URL; syncBgm() crossfades to a new track only when it CHANGES, so
+// turns that keep the same background never restart the music. Browsers block
+// autoplay until a user gesture — the title Begin button primes playback.
+let _bgmEls = null, _bgmActive = 0, _bgmCur = null, _bgmUnlocked = false;
+const BGM_VOL = 0.45;
+
+function _ensureBgm() {
+    if (_bgmEls) return _bgmEls;
+    const mk = function() {
+        const a = document.createElement('audio');
+        a.loop = true; a.preload = 'auto'; a.volume = 0;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        return a;
+    };
+    _bgmEls = [mk(), mk()];
+    return _bgmEls;
+}
+
+function unlockBgm() {
+    // Must run inside a user gesture so later .play() calls are permitted.
+    _bgmUnlocked = true;
+    _ensureBgm().forEach(function(a) {
+        const p = a.play();
+        if (p && p.catch) p.catch(function() {});
+        try { a.pause(); } catch (e) {}
+    });
+}
+
+function crossfadeBgm(url) {
+    const els = _ensureBgm();
+    const cur = els[_bgmActive];
+    const next = els[1 - _bgmActive];
+    next.src = url;
+    next.volume = 0;
+    const pr = next.play();
+    if (pr && pr.catch) pr.catch(function() {});
+    if (window._bgmFade) clearInterval(window._bgmFade);
+    const STEP = 0.05;
+    window._bgmFade = setInterval(function() {
+        next.volume = Math.min(BGM_VOL, next.volume + STEP);
+        cur.volume = Math.max(0, cur.volume - STEP);
+        if (next.volume >= BGM_VOL && cur.volume <= 0) {
+            clearInterval(window._bgmFade); window._bgmFade = null;
+            try { cur.pause(); } catch (e) {}
+        }
+    }, 80);
+    _bgmActive = 1 - _bgmActive;
+}
+
+function syncBgm() {
+    const screen = document.querySelector('.vn-screen');
+    if (!screen) return;
+    const url = screen.getAttribute('data-bgm');
+    if (!url) return;            // no track for this screen (or file absent) — leave playing
+    if (url === _bgmCur) return; // same track — keep playing, never restart
+    if (!_bgmUnlocked) return;   // wait for the first gesture; the next render retries
+    _bgmCur = url;
+    crossfadeBgm(url);
+}
+
 // Watch for VN screen changes: start typewriter, restore overlay-panel UI
 // state (the canvas HTML is replaced wholesale each beat/turn), and mirror
 // the hidden save status into the save panel.
@@ -1670,6 +1763,7 @@ const _typewriterObserver = new MutationObserver(function() {
     syncSaveStatus();
     syncSlotRows();
     syncStage();
+    syncBgm();
 });
 
 // Reveal the free-text bar only at the END of a turn: when we're on the last
@@ -1778,7 +1872,8 @@ const _castingSkeletonHTML = (names, message, sub, active) => {
     const subHtml = sub ? '<div class="vn-loading-sub">' + sub + '</div>' : '';
     return '<div class="vn-screen"><div class="vn-casting" data-skeleton="1">'
         + '<div class="casting-title">✦ ' + (message || 'Assembling your cast…')
-        + '</div><div class="portraits">' + cards + '</div>' + subHtml
+        + '</div><div class="vn-castbar"><i style="width:2%"></i></div>'
+        + '<div class="portraits">' + cards + '</div>' + subHtml
         + '</div></div>';
 };
 
@@ -2005,6 +2100,7 @@ document.addEventListener('click', function(e) {
     const begin = e.target.closest('.vn-title-begin');
     if (begin) {
         e.preventDefault();
+        unlockBgm();   // first guaranteed gesture — prime audio autoplay
         window._vnUi.panel = null;
         // Sync the name input to the hidden Gradio textbox before starting
         const nameInput = document.querySelector('.vn-title-name-input');
@@ -2030,6 +2126,7 @@ document.addEventListener('click', function(e) {
     const csGo = e.target.closest('.vn-cs-go');
     if (csGo) {
         e.preventDefault();
+        unlockBgm();   // generated-flow start gesture — prime audio autoplay
         // Read all card fields from the HTML and bridge them into hidden Gradio controls
         document.querySelectorAll('.vn-cs-card').forEach(function(card) {
             const idx = card.getAttribute('data-cs-idx');

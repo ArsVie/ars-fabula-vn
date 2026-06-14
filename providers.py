@@ -78,6 +78,31 @@ PRESET_BACKGROUNDS: dict[str, dict] = {
 }
 
 
+# Background → music-track mapping. Many backgrounds deliberately share one
+# track (a track key maps to static/music/<track>.mp3). A manifest — not a
+# per-bg-key filename convention — lets scenes share moods for free and gives
+# runtime-generated novel backgrounds a sensible fallback ("calm"). Add tracks
+# by dropping <track>.mp3 into static/music/; a missing file just plays nothing.
+BG_MUSIC: dict[str, str] = {
+    "classroom":   "school_day",
+    "hallway":     "school_day",
+    "library":     "school_day",
+    "courtyard":   "school_day",
+    "gate":        "sunset",
+    "rooftop":     "sunset",
+    "sunset_hill": "sunset",
+    "cafe":        "cozy",
+    "home_room":   "cozy",
+    "park":        "calm",
+}
+DEFAULT_MUSIC = "calm"
+
+
+def bg_music_track(key: str) -> str:
+    """Track key for a background key (falls back to the default mood)."""
+    return BG_MUSIC.get(key, DEFAULT_MUSIC)
+
+
 @dataclass
 class BackgroundInfo:
     """Information about a background image."""
@@ -85,6 +110,7 @@ class BackgroundInfo:
     label: str
     path: str            # absolute path to the image file
     is_placeholder: bool = False
+    music: str = DEFAULT_MUSIC   # BGM track key → static/music/<music>.mp3
 
 
 class BackgroundProvider(ABC):
@@ -129,6 +155,7 @@ class PresetBackgroundProvider(BackgroundProvider):
             label=info["label"],
             path=path,
             is_placeholder=is_placeholder,
+            music=bg_music_track(key),
         )
 
     def list_available(self) -> list[str]:
@@ -212,6 +239,7 @@ class ComfyUIBackgroundProvider(PresetBackgroundProvider):
                 label=key.replace("_", " ").title(),
                 path=self._generated_paths[key],
                 is_placeholder=False,
+                music=bg_music_track(key),
             )
 
         # Generation failed — fall back to preset/placeholder behavior

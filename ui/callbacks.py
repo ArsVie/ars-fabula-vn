@@ -61,7 +61,8 @@ def make_callbacks(bg_provider: BackgroundProvider):
             preview = [c["name"] for c in cards] or ["?", "?", "?"]
             yield (None, None,
                    _casting_screen_html(preview, {}, "Assembling your cast…",
-                                        sub="warming up the studio", active=0),
+                                        sub="warming up the studio", active=0,
+                                        pct=2),
                    {}, _cast_panel_html({}), "", "Starting…", None, "", [], 0, None)
 
             # On Spaces, probe ComfyUI now (a cheap FS check in embed mode); if
@@ -86,7 +87,8 @@ def make_callbacks(bg_provider: BackgroundProvider):
             if cards:
                 yield _casting_step([c["name"] for c in cards], {},
                                     "Designing your cast…",
-                                    "writing their personalities", active=0)
+                                    "writing their personalities", active=0,
+                                    pct=5)
                 specs = build_custom_specs(cards)
                 if not specs:
                     specs = [(k, PRESET_CHARACTERS[k]) for k in ["yuki", "marie", "sakura"]]
@@ -104,7 +106,8 @@ def make_callbacks(bg_provider: BackgroundProvider):
             key, preset = specs[0]
             yield _casting_step(char_keys, {},
                                 f"Sketching {preset.get('name', key)}…",
-                                "drawing the first portrait", active=0)
+                                "drawing the first portrait", active=0,
+                                pct=_cast_pct(0, len(specs), 0.25))
             char_dir = _char_dir(key)
             base_path = _generate_base_with_face_gate(key, preset, char_dir)
 
@@ -126,18 +129,19 @@ def make_callbacks(bg_provider: BackgroundProvider):
 
         # Beat 1 — the casting screen, empty portraits
         yield (None, None,
-               _casting_screen_html(char_keys, resolved),
+               _casting_screen_html(char_keys, resolved, pct=5),
                {}, _cast_panel_html({}),
                "", "Casting…", None, "", [], 0, None)
 
         # Beat 2 — portraits resolve
-        for key in char_keys:
+        for i, key in enumerate(char_keys):
             member = loader(key)
             if member:
                 resolved[member.character.name] = member
             time.sleep(0.45)
             yield (None, None,
-                   _casting_screen_html(char_keys, resolved),
+                   _casting_screen_html(char_keys, resolved,
+                                        pct=(i + 1) / len(char_keys) * 85),
                    {}, _cast_panel_html(resolved),
                    "", "Casting…", None, "", [], 0, None)
 
@@ -153,7 +157,8 @@ def make_callbacks(bg_provider: BackgroundProvider):
         yield (None, None,
                _casting_screen_html(char_keys, resolved,
                                     "The story begins…",
-                                    sub="the narrator is setting the scene"),
+                                    sub="the narrator is setting the scene",
+                                    pct=95),
                cast, _cast_panel_html(cast), "", "Opening scene…",
                None, "", [], 0, None)
         scene = SceneState(
@@ -178,16 +183,25 @@ def make_callbacks(bg_provider: BackgroundProvider):
                voice_path, prev_bg, beats, 0, None)
 
     def _casting_step(char_keys, resolved, message, sub="", active=None,
-                      sprite_paths=None, info=""):
+                      sprite_paths=None, info="", pct=None):
         """An intermediate 12-tuple for the casting generators: swap in the
         UNIFIED casting screen (cards + ✦ header) + status line, gr.skip() the
         state fields. This is the single waiting vocabulary for the generated
         flow — no separate ✦-only loading screen."""
         return (gr.skip(), gr.skip(),
                 _casting_screen_html(char_keys, resolved, message, sub=sub,
-                                     sprite_paths=sprite_paths, active=active),
+                                     sprite_paths=sprite_paths, active=active,
+                                     pct=pct),
                 gr.skip(), gr.skip(), gr.skip(), info or message,
                 gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+
+    def _cast_pct(done_chars: int, total: int, phase: float) -> float:
+        """Coarse roster-level progress for the casting bar. `done_chars` is the
+        number of characters fully baked; `phase` (0..1) is how far into the
+        current character we are (sketch ≈ 0.25, baking ≈ 0.7). Honest and
+        monotonic across the whole generated flow."""
+        total = max(1, total)
+        return min(99.0, (done_chars + phase) / total * 100.0)
 
     def _members_to_cast(members) -> dict:
         """name -> CastMember for characters baked on prior confirms, so the
@@ -260,7 +274,8 @@ def make_callbacks(bg_provider: BackgroundProvider):
         yield _casting_step(ckeys, _members_to_cast(members),
                             f"Baking {sname}…", f"finalizing {sname}'s expressions",
                             active=idx, sprite_paths=_base_sprites(specs),
-                            info=f"Baking {sname} · {idx + 1}/{len(specs)}")
+                            info=f"Baking {sname} · {idx + 1}/{len(specs)}",
+                            pct=_cast_pct(idx, len(specs), 0.7))
         base = os.path.join(_char_dir(key), f"{key}_base.png")
         try:
             member = _generate_one_via_comfy(key, preset,
@@ -279,7 +294,8 @@ def make_callbacks(bg_provider: BackgroundProvider):
             yield _casting_step(ckeys, _members_to_cast(members),
                                 f"Sketching {next_name}…", "drawing the next portrait",
                                 active=next_idx, sprite_paths=_base_sprites(specs),
-                                info=f"Generating {next_name} · {next_idx + 1}/{len(specs)}")
+                                info=f"Generating {next_name} · {next_idx + 1}/{len(specs)}",
+                                pct=_cast_pct(next_idx, len(specs), 0.25))
             base_path = _generate_base_with_face_gate(next_key, next_preset,
                                                       _char_dir(next_key))
             new_state = {"specs": specs, "idx": next_idx, "phase": "review",
@@ -306,14 +322,14 @@ def make_callbacks(bg_provider: BackgroundProvider):
             names_str = ", ".join(bake_warnings)
             narrator_sub = f"loading the story model (couldn't draw {names_str} — using a placeholder)"
         yield _casting_step(ckeys, cast, "Waking the narrator…", narrator_sub,
-                            info="Loading story model…")
+                            info="Loading story model…", pct=98)
         comfy_free_vram()
         ensure_llm(ModelConfig.from_env(), timeout=300)
 
         # Start the VN
         yield _casting_step(ckeys, cast, "The story begins…",
                             "the narrator is setting the scene",
-                            info="Opening scene…")
+                            info="Opening scene…", pct=99)
         scene = SceneState(
             cast=cast, present=[],
             background="classroom", mood="peaceful",

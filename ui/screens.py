@@ -335,7 +335,8 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
                     more: bool = False,
                     waiting: bool = False,
                     log_text: str = "",
-                    cast_html: str = "") -> str:
+                    cast_html: str = "",
+                    bgm_url: str = "") -> str:
     """Build the VN screen HTML: crossfading bg layers, sprites, dialogue, choices.
 
     `more=True` marks the screen as having further beats to read this turn:
@@ -427,7 +428,7 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
     # bar-reveal JS keys off data-more!=="1", so the free bar stays hidden.
     more_flag = "1" if (more or waiting) else "0"
     return f"""
-    <div class="vn-screen{' advancing' if more else ''}" data-more="{more_flag}" data-waiting="{'1' if waiting else '0'}" data-choices="{'1' if choices_html else '0'}" data-typing="pending">
+    <div class="vn-screen{' advancing' if more else ''}" data-more="{more_flag}" data-waiting="{'1' if waiting else '0'}" data-choices="{'1' if choices_html else '0'}" data-bgm="{bgm_url}" data-typing="pending">
         {bg_layers}
         <div class="vn-chars">{sprite_html}</div>
         {choices_html}
@@ -441,7 +442,8 @@ def _casting_screen_html(char_keys: list[str],
                          message: str = "Assembling your cast…",
                          sub: str = "",
                          sprite_paths: dict[str, str] | None = None,
-                         active: int | None = None) -> str:
+                         active: int | None = None,
+                         pct: float | None = None) -> str:
     """The SINGLE casting/generation waiting surface: a card per character that
     fills with its sprite as the bake progresses, with a ✦ header + sub-line.
 
@@ -487,10 +489,18 @@ def _casting_screen_html(char_keys: list[str],
         )
 
     sub_html = f'<div class="vn-loading-sub">{sub}</div>' if sub else ""
+    # Coarse generation progress bar — the width is honest roster-level progress
+    # (character N of M, sketch vs bake); a CSS shimmer keeps it alive during the
+    # long blocking ComfyUI bake, when the width itself can't update mid-call.
+    bar_html = ""
+    if pct is not None:
+        w = max(2, min(100, round(pct)))
+        bar_html = f'<div class="vn-castbar"><i style="width:{w}%"></i></div>'
     return f"""
     <div class="vn-screen">
         <div class="vn-casting">
             <div class="casting-title">✦ {message}</div>
+            {bar_html}
             <div class="portraits">{''.join(portraits)}</div>
             {sub_html}
         </div>
