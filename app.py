@@ -20,12 +20,19 @@ from __future__ import annotations
 import os
 
 # ── Hugging Face Spaces / ZeroGPU ──────────────────────────────────────
-# SPACE_ID is set by the Spaces runtime. There, the LLM runs in-process
-# via transformers (+ @spaces.GPU); llama-server/ComfyUI don't exist, and
-# their fallbacks (curated cast, preset backgrounds, mock voice) apply.
+# SPACE_ID is set by the Spaces runtime. Two Space flavours share this file:
+#   • Docker/T4 Space — the Dockerfile sets ARS_FABULA_BACKEND=server and
+#     ARS_FABULA_COMFY_MODE stays "http" (a real ComfyUI subprocess runs).
+#   • ZeroGPU Gradio Space — backend defaults to transformers below; a
+#     subprocess can't hold a GPU here, so we drive ComfyUI in-process via
+#     the "embed" transport (@spaces.GPU). See comfy_embed.py.
 ON_SPACES = bool(os.getenv("SPACE_ID"))
 if ON_SPACES:
     os.environ.setdefault("ARS_FABULA_BACKEND", "transformers")
+    if os.environ["ARS_FABULA_BACKEND"] == "transformers":
+        # ZeroGPU path: live cast + live novel backgrounds, both in-process.
+        os.environ.setdefault("ARS_FABULA_COMFY_MODE", "embed")
+        os.environ.setdefault("ARS_FABULA_BG", "comfyui")
 
 import gradio as gr
 
@@ -277,6 +284,16 @@ if __name__ == "__main__":
         # emulation layer) at startup, not lazily inside a request.
         from model_client import preload_transformers
         preload_transformers()
+        # Embed mode has no Dockerfile to bake the diffusion weights in — stage
+        # them now (idempotent) so the first cast bake doesn't stall on a
+        # multi-GB download mid-@spaces.GPU.
+        if os.getenv("ARS_FABULA_COMFY_MODE") == "embed":
+            try:
+                import comfy_embed
+                comfy_embed.stage_models()
+            except Exception as e:
+                print(f"[space] comfy model staging failed ({e}); "
+                      f"cast will fall back to curated")
         port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
 
     app = create_ui()

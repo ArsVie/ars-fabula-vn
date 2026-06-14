@@ -47,6 +47,13 @@ from vn_contracts import Character, CastMember, STANDARD_EXPRESSIONS
 # the Windows host IP).
 COMFY_HOST = os.getenv("ARS_FABULA_COMFY", "http://127.0.0.1:8188").rstrip("/")
 COMFY_OUTPUT = os.path.expanduser("~/comfy/ComfyUI/output")  # legacy; results now fetched via /view
+
+# Transport for ComfyUI: "http" talks to a running ComfyUI server (Docker/T4
+# Space + local dev — unchanged). "embed" drives ComfyUI's PromptExecutor
+# in-process inside an @spaces.GPU call (ZeroGPU Gradio Space, where a
+# subprocess server can't get a GPU). Same workflow dicts either way — only
+# the four _comfy_* helpers below branch on this. See comfy_embed.py.
+COMFY_MODE = os.getenv("ARS_FABULA_COMFY_MODE", "http").lower()
 PROJECT_DIR = os.path.dirname(__file__)
 CURATED_DIR = os.path.join(PROJECT_DIR, "static", "sprites", "curated")
 GENERATED_DIR = os.path.join(PROJECT_DIR, "static", "sprites", "generated")
@@ -548,6 +555,11 @@ def _comfy_upload(path: str, name: str) -> dict:
     re-uploading the same filename makes ComfyUI save a renamed copy and
     the workflow's LoadImage silently keeps reading the OLD image.
     """
+    if COMFY_MODE == "embed":
+        import comfy_embed
+        dst = os.path.join(comfy_embed.input_dir(), name)
+        shutil.copyfile(path, dst)   # overwrite, like overwrite=true above
+        return {"name": name}
     with open(path, "rb") as f:
         resp = _session().post(
             f"{COMFY_HOST}/upload/image",
@@ -619,6 +631,18 @@ def _comfy_wait(prompt_id: str, timeout: int = 180) -> Optional[dict]:
     return None
 
 
+def _comfy_run(workflow: dict, client_id: str,
+               timeout: int = 180) -> Optional[dict]:
+    """Run a workflow and return its first-image info dict, via whichever
+    transport COMFY_MODE selects. Unifies the http submit+wait pair and the
+    in-process executor so the call sites are transport-agnostic."""
+    if COMFY_MODE == "embed":
+        import comfy_embed
+        return comfy_embed.run_workflow(workflow, client_id)
+    pid = _comfy_submit(workflow, client_id)
+    return _comfy_wait(pid, timeout=timeout)
+
+
 def _comfy_fetch_image(img_info: dict, dest_path: str) -> Optional[str]:
     """Download a generated image from ComfyUI via its /view endpoint.
 
@@ -626,6 +650,16 @@ def _comfy_fetch_image(img_info: dict, dest_path: str) -> Optional[str]:
     breaks whenever ComfyUI lives somewhere else (or SaveImage used a
     subfolder). Works regardless of where/how ComfyUI is installed.
     """
+    # Embed transport already wrote the file to ComfyUI's output dir on disk;
+    # just copy it to the destination the caller expects (no HTTP /view).
+    if COMFY_MODE == "embed":
+        src = img_info.get("_path")
+        if not src or not os.path.exists(src):
+            print(f"  [cast] embed output missing for {img_info}")
+            return None
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        shutil.copyfile(src, dest_path)
+        return dest_path
     try:
         resp = _session().get(
             f"{COMFY_HOST}/view",
@@ -650,6 +684,9 @@ def _comfy_fetch_image(img_info: dict, dest_path: str) -> Optional[str]:
 
 def _comfy_health() -> bool:
     """Check if ComfyUI is reachable (proxy-bypassing, like all other calls)."""
+    if COMFY_MODE == "embed":
+        import comfy_embed
+        return comfy_embed.health()
     try:
         return _session().get(f"{COMFY_HOST}/system_stats", timeout=3).ok
     except Exception:
@@ -663,6 +700,10 @@ def comfy_free_vram() -> bool:
     ComfyUI reloads its models lazily on the next /prompt, so this is safe
     to call between casting beats. No-op if ComfyUI isn't reachable.
     """
+    # Embed mode: ZeroGPU grants/reclaims the GPU per @spaces.GPU call, so
+    # there is no resident server holding VRAM to free between beats.
+    if COMFY_MODE == "embed":
+        return False
     try:
         r = _session().post(f"{COMFY_HOST}/free",
                             json={"unload_models": True, "free_memory": True},
@@ -707,8 +748,7 @@ def _generate_base(character_key: str, preset: dict, out_dir: str,
         "45": {"inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}, "class_type": "CLIPLoader"},
     }
 
-    pid = _comfy_submit(workflow, f"base_{character_key}")
-    result = _comfy_wait(pid)
+    result = _comfy_run(workflow, f"base_{character_key}")
     if result and _comfy_fetch_image(result, out_path):
         print(f"  [cast] Generated base for {character_key} (seed={seed}): {out_path}")
         return out_path
@@ -750,12 +790,11 @@ def _detect_anime_face(base_path: str, character_key: str) -> Optional[bool]:
     }
 
     try:
-        pid = _comfy_submit(workflow, f"facegate_{character_key}")
+        result = _comfy_run(workflow, f"facegate_{character_key}", timeout=60)
     except Exception as e:
         print(f"  [cast] Face gate unavailable ({e}); proceeding without gate")
         return None
 
-    result = _comfy_wait(pid, timeout=60)
     if not result:
         print(f"  [cast] Face gate produced no output; proceeding without gate")
         return None
@@ -867,8 +906,8 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
         "1": {"inputs": {"filename_prefix": f"{character_key}_{expr_name}", "images": ["80", 0]}, "class_type": "SaveImage"},
     }
 
-    pid = _comfy_submit(workflow, f"{character_key}_{expr_name}_{seed}")
-    result = _comfy_wait(pid, timeout=200)
+    result = _comfy_run(workflow, f"{character_key}_{expr_name}_{seed}",
+                        timeout=200)
     if result and _comfy_fetch_image(result, out_path):
         return out_path
     return None

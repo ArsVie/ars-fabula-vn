@@ -229,8 +229,7 @@ class ComfyUIBackgroundProvider(PresetBackgroundProvider):
             # (UNETLoader + Qwen CLIP/VAE — same trio as the validated
             # expression sheet; anima is a UNET-only file, so
             # CheckpointLoaderSimple would fail to load it).
-            from cast_pipeline import (_comfy_submit, _comfy_wait,
-                                       _comfy_fetch_image,
+            from cast_pipeline import (_comfy_run, _comfy_fetch_image,
                                        UNET_NAME, CLIP_NAME, VAE_NAME,
                                        SAMPLER, SCHEDULER, STYLE_TAGS)
 
@@ -246,8 +245,7 @@ class ComfyUIBackgroundProvider(PresetBackgroundProvider):
                 "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": f"bg_{key}", "images": ["8", 0]}},
             }
 
-            pid = _comfy_submit(workflow, f"bg_{key}")
-            result = _comfy_wait(pid, timeout=120)
+            result = _comfy_run(workflow, f"bg_{key}", timeout=120)
             if not result:
                 print(f"[bg] Generation failed/timed out for '{key}'")
                 return None

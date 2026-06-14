@@ -1,0 +1,10 @@
+# The Docker/T4 Space clones its own ComfyUI to /app/comfy and runs the HTTP
+# transport — it never uses the embedded (ZeroGPU) submodules under
+# third_party/. Keep them out of the build context so the image stays lean.
+third_party/
+
+.git/
+__pycache__/
+*.pyc
+.venv-convert/
+runs/
