@@ -42,6 +42,11 @@ class ModelConfig:
     # recycling); presence penalizes any reuse at all (topic recycling).
     frequency_penalty: float = 0.4
     presence_penalty: float = 0.3
+    # Modal proxy-auth credentials. When the base_url is a Modal web endpoint
+    # deployed with requires_proxy_auth=True, EVERY path (incl. /health and
+    # /v1/*) demands these two headers; empty = no auth (a local llama-server).
+    modal_key: str = ""
+    modal_secret: str = ""
 
     @classmethod
     def from_env(cls) -> "ModelConfig":
@@ -55,6 +60,8 @@ class ModelConfig:
             timeout=int(os.getenv("ARS_FABULA_TIMEOUT", "120")),
             frequency_penalty=float(os.getenv("ARS_FABULA_FREQUENCY_PENALTY", "0.4")),
             presence_penalty=float(os.getenv("ARS_FABULA_PRESENCE_PENALTY", "0.3")),
+            modal_key=os.getenv("ARS_FABULA_MODAL_KEY", ""),
+            modal_secret=os.getenv("ARS_FABULA_MODAL_SECRET", ""),
         )
 
 
@@ -94,6 +101,18 @@ class LlamaServerClient(ModelClient):
     def __init__(self, config: Optional[ModelConfig] = None):
         self.cfg = config or ModelConfig.from_env()
 
+    def _headers(self, json_body: bool = True) -> dict:
+        """Auth + content headers for every request. Adds the Modal proxy-auth
+        pair when configured (a Modal web endpoint with requires_proxy_auth);
+        local llama-server just gets the harmless Bearer header."""
+        h = {"Authorization": f"Bearer {self.cfg.api_key}"}
+        if json_body:
+            h["Content-Type"] = "application/json"
+        if self.cfg.modal_key and self.cfg.modal_secret:
+            h["Modal-Key"] = self.cfg.modal_key
+            h["Modal-Secret"] = self.cfg.modal_secret
+        return h
+
     def chat(self, messages, tools=None, **kw) -> dict:
         payload = {
             "model": kw.get("model", self.cfg.model),
@@ -110,8 +129,7 @@ class LlamaServerClient(ModelClient):
             payload["tool_choice"] = kw.get("tool_choice", "auto")
         resp = requests.post(
             f"{self.cfg.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.cfg.api_key}",
-                     "Content-Type": "application/json"},
+            headers=self._headers(),
             json=payload, timeout=self.cfg.timeout,
         )
         resp.raise_for_status()
@@ -135,8 +153,7 @@ class LlamaServerClient(ModelClient):
             payload["tool_choice"] = kw.get("tool_choice", "auto")
         with requests.post(
             f"{self.cfg.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.cfg.api_key}",
-                     "Content-Type": "application/json"},
+            headers=self._headers(),
             json=payload, timeout=self.cfg.timeout, stream=True,
         ) as resp:
             resp.raise_for_status()
@@ -164,7 +181,9 @@ class LlamaServerClient(ModelClient):
     def health(self) -> bool:
         try:
             base = self.cfg.base_url.rsplit("/v1", 1)[0]
-            return requests.get(f"{base}/health", timeout=5).status_code == 200
+            return requests.get(f"{base}/health", timeout=5,
+                                headers=self._headers(json_body=False)
+                                ).status_code == 200
         except requests.RequestException:
             return False
 
@@ -181,7 +200,8 @@ class LlamaServerClient(ModelClient):
         if cached is not None:
             return cached
         try:
-            payload = requests.get(f"{self.cfg.base_url}/models", timeout=5).json()
+            payload = requests.get(f"{self.cfg.base_url}/models", timeout=5,
+                                    headers=self._headers(json_body=False)).json()
             # OpenAI shape: {"data": [{"id": ...}]}. The atomic-fork/ollama
             # shape: {"models": [{"name"/"model": ...}]}. Accept either.
             entries = payload.get("data") or payload.get("models") or []
