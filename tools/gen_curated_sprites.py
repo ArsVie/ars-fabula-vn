@@ -1,7 +1,7 @@
 """Generate all character sprites via ComfyUI, then copy to curated dir."""
 import os, shutil, sys
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from cast_pipeline import generate_cast, GENERATED_DIR, CURATED_DIR
 
 print("[gen] Generating all 4 characters...", flush=True)

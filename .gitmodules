@@ -1,0 +1,12 @@
+[submodule "third_party/custom_nodes/ComfyUI-Impact-Subpack"]
+	path = third_party/custom_nodes/ComfyUI-Impact-Subpack
+	url = https://github.com/ltdrdata/ComfyUI-Impact-Subpack
+[submodule "third_party/custom_nodes/ComfyUI-GGUF"]
+	path = third_party/custom_nodes/ComfyUI-GGUF
+	url = https://github.com/city96/ComfyUI-GGUF
+[submodule "third_party/custom_nodes/comfyui-impact-pack"]
+	path = third_party/custom_nodes/comfyui-impact-pack
+	url = https://github.com/ltdrdata/ComfyUI-Impact-Pack
+[submodule "third_party/comfyui"]
+	path = third_party/comfyui
+	url = https://github.com/comfyanonymous/ComfyUI

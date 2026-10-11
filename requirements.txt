@@ -1,0 +1,64 @@
+# ── Core app + LLM (transformers backend on ZeroGPU) ──────────────────
+transformers>=4.56
+accelerate
+bitsandbytes
+spaces
+requests
+pillow
+numpy>=1.25.0
+huggingface_hub[hf_transfer]
+gradio==6.16.0
+
+# ── In-process ComfyUI (embed transport, ZeroGPU) ─────────────────────
+# ComfyUI + custom-node deps INLINED here, not `-r third_party/...`: HF's
+# gradio build installs requirements.txt in isolation (the repo isn't mounted
+# yet), so relative -r includes can't resolve. Versions track ComfyUI commit
+# b6332446 + the pinned custom nodes. torch itself is provided by the Space
+# base image (build appends torch<=2.11.0); we only add the siblings. SAM2
+# (git+facebookresearch/sam2) is intentionally omitted — the pipeline uses SAM
+# ViT-B via SAMLoader, validated without SAM2; and PyOpenGL/glfw (GLSL nodes,
+# unused, need system GL) are omitted to keep the headless build clean.
+# ComfyUI core
+comfyui-frontend-package==1.42.15
+comfyui-workflow-templates==0.9.63
+comfyui-embedded-docs==0.4.4
+torchsde
+torchvision
+torchaudio
+einops
+tokenizers>=0.13.3
+sentencepiece
+safetensors>=0.4.2
+aiohttp>=3.11.8
+yarl>=1.18.0
+pyyaml
+scipy
+tqdm
+psutil
+alembic
+SQLAlchemy>=2.0.0
+filelock
+av>=14.2.0
+comfy-kitchen>=0.2.8
+comfy-aimdo==0.3.0
+simpleeval>=1.0.0
+blake3
+kornia>=0.7.1
+spandrel
+pydantic~=2.0
+pydantic-settings~=2.0
+# ComfyUI-GGUF (Anima UNET loader)
+gguf>=0.13.0
+protobuf
+# Impact-Pack + Impact-Subpack (face gate, FaceDetailer, SAM, YOLO)
+segment-anything
+scikit-image
+piexif
+opencv-python-headless
+dill
+matplotlib
+ultralytics>=8.3.162
+
+# ── Background removal for alpha sprites ──────────────────────────────
+rembg[cpu]
+onnxruntime

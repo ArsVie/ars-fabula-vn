@@ -51,3 +51,21 @@ def thumb_data_uri(path: Optional[str], height: int = 160) -> str:
         return _thumb_uri_cached(path, os.path.getmtime(path), height)
     except OSError:
         return ""
+
+
+# Background music lives in static/music/<track>.mp3. Unlike sprites/backgrounds
+# (small, inlined as data: URIs), audio files are large, so they're served by
+# Gradio's file route instead — allowed_paths=[STATIC_DIR] is set in app.py.
+_MUSIC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "music")
+
+
+def music_url(track: Optional[str]) -> str:
+    """Return the Gradio file-route URL for a BGM track key, or '' if the file
+    isn't present (so the client simply plays no music rather than erroring)."""
+    if not track:
+        return ""
+    path = os.path.join(_MUSIC_DIR, f"{track}.mp3")
+    if not os.path.exists(path):
+        return ""
+    return "/gradio_api/file=" + os.path.abspath(path).replace("\\", "/")

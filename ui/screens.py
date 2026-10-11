@@ -3,11 +3,32 @@ and the main scene screen.
 """
 from __future__ import annotations
 import html as _html
+import os
 
 from vn_contracts import CastMember, Choice
 from vn_engine import list_saves
 
 from .media import data_uri, thumb_data_uri
+
+
+def _zerogpu_mock_notice() -> str:
+    """On the ZeroGPU Space (in-process transformers backend, no image stack)
+    the generated cast can't run — on_start falls back to the curated cast.
+    Surface that up front so users know the generated flow is a preview here
+    and that real character generation needs a local run. Returns "" anywhere
+    else (local, or the Docker T4 Space where ComfyUI is present)."""
+    on_zerogpu = (bool(os.getenv("SPACE_ID"))
+                  and os.getenv("ARS_FABULA_BACKEND", "server").lower()
+                  == "transformers")
+    if not on_zerogpu:
+        return ""
+    return (
+        '<div class="vn-cs-notice">⚠ <strong>Preview only on this hosted demo.</strong> '
+        'Character generation needs an image backend (ComfyUI) that isn\'t '
+        'available here, so the <strong>curated cast</strong> stands in for the '
+        'generated one. For real custom generation, run the project locally — '
+        'see the Space README.</div>'
+    )
 
 
 def _slot_rows_html(selectable_empty: bool = True) -> str:
@@ -55,6 +76,7 @@ def _title_screen_html() -> str:
     has_saves = any(not m.get("empty") for m in list_saves())
     load_btn = ('<button class="vn-title-load">Load</button>' if has_saves
                 else '<button class="vn-title-load disabled" disabled>Load</button>')
+    mock_notice = _zerogpu_mock_notice()
     return f"""
     <div class="vn-screen vn-title-screen">
         <div class="vn-title-content">
@@ -80,6 +102,7 @@ def _title_screen_html() -> str:
         <div class="vn-cast-setup">
             <div class="vn-cs-header">
                 <div class="vn-cs-title">Cast Setup</div>
+                {mock_notice}
                 <div class="vn-cs-desc">
                     <p>Leave every card blank to generate the default cast
                     (Yuki, Marie, Sakura). Otherwise fill <strong>Name + Concept</strong>
@@ -312,7 +335,8 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
                     more: bool = False,
                     waiting: bool = False,
                     log_text: str = "",
-                    cast_html: str = "") -> str:
+                    cast_html: str = "",
+                    bgm_url: str = "") -> str:
     """Build the VN screen HTML: crossfading bg layers, sprites, dialogue, choices.
 
     `more=True` marks the screen as having further beats to read this turn:
@@ -404,7 +428,7 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
     # bar-reveal JS keys off data-more!=="1", so the free bar stays hidden.
     more_flag = "1" if (more or waiting) else "0"
     return f"""
-    <div class="vn-screen{' advancing' if more else ''}" data-more="{more_flag}" data-waiting="{'1' if waiting else '0'}" data-choices="{'1' if choices_html else '0'}" data-typing="pending">
+    <div class="vn-screen{' advancing' if more else ''}" data-more="{more_flag}" data-waiting="{'1' if waiting else '0'}" data-choices="{'1' if choices_html else '0'}" data-bgm="{bgm_url}" data-typing="pending">
         {bg_layers}
         <div class="vn-chars">{sprite_html}</div>
         {choices_html}
@@ -416,40 +440,67 @@ def _vn_screen_html(bg_path: str, cast: dict[str, CastMember],
 def _casting_screen_html(char_keys: list[str],
                          resolved: dict[str, CastMember],
                          message: str = "Assembling your cast…",
-                         sub: str = "") -> str:
-    """The casting-beat screen: portraits resolve one by one.
+                         sub: str = "",
+                         sprite_paths: dict[str, str] | None = None,
+                         active: int | None = None,
+                         pct: float | None = None) -> str:
+    """The SINGLE casting/generation waiting surface: a card per character that
+    fills with its sprite as the bake progresses, with a ✦ header + sub-line.
 
-    `sub` adds a secondary status line under the portraits (same voice as the
-    ✦ loading screen's sub-text). It lets this ONE screen carry the whole
-    cast→opening-scene wait — cards stay visible while the ✦ pulses and the
-    sub-line narrates — instead of swapping to a separate loading screen.
+    This is the one waiting vocabulary for the whole generated flow (no separate
+    ✦-only loading screen): the button press paints it instantly and every
+    subsequent phase (design, base, expression bake, scene open) reuses it.
+
+    Args:
+        char_keys: per-card identifier (preset slug or display name).
+        resolved:  name -> CastMember (uses the neutral sprite) once baked.
+        sprite_paths: key -> image path for in-progress sprites (e.g. the base
+            portrait) shown before a full CastMember exists.
+        active:    index of the card currently being worked on (gets a pulse).
     """
+    resolved = resolved or {}
+    sprite_paths = sprite_paths or {}
     portraits = []
-    for key in char_keys:
+    for i, key in enumerate(char_keys):
         # Preset keys are lowercase slugs; custom names arrive display-ready
         name = key.capitalize() if key.islower() else key
         member = resolved.get(name)
-        if member:
+        uri = ""
+        if key in sprite_paths:
+            uri = data_uri(sprite_paths[key])
+        elif member:
             uri = data_uri(member.get_sprite("neutral"))
-            inner = (f'<img src="{uri}" alt="{name}">' if uri
-                     else f'<div class="pname">{name}</div>')
-            portraits.append(
-                f'<div class="portrait-wrap">'
-                f'<div class="vn-portrait">{inner}</div>'
-                f'<div class="pname">{name}</div></div>'
-            )
+        is_active = (active is not None and i == active)
+        cls = "vn-portrait" + (" active" if is_active else
+                               ("" if uri else " pending"))
+        if uri:
+            inner = f'<img src="{uri}" alt="{name}">'
+            label = f'<div class="pname">{name}</div>'
+        elif is_active:
+            inner = '<div class="casting-spinner">✦</div>'
+            label = f'<div class="pname">{name}</div>'
         else:
-            portraits.append(
-                f'<div class="portrait-wrap">'
-                f'<div class="vn-portrait pending">…</div>'
-                f'<div class="pname pending">?</div></div>'
-            )
+            inner = '…'
+            label = (f'<div class="pname">{name}</div>' if name and name != "?"
+                     else '<div class="pname pending">?</div>')
+        portraits.append(
+            f'<div class="portrait-wrap">'
+            f'<div class="{cls}">{inner}</div>{label}</div>'
+        )
 
     sub_html = f'<div class="vn-loading-sub">{sub}</div>' if sub else ""
+    # Coarse generation progress bar — the width is honest roster-level progress
+    # (character N of M, sketch vs bake); a CSS shimmer keeps it alive during the
+    # long blocking ComfyUI bake, when the width itself can't update mid-call.
+    bar_html = ""
+    if pct is not None:
+        w = max(2, min(100, round(pct)))
+        bar_html = f'<div class="vn-castbar"><i style="width:{w}%"></i></div>'
     return f"""
     <div class="vn-screen">
         <div class="vn-casting">
             <div class="casting-title">✦ {message}</div>
+            {bar_html}
             <div class="portraits">{''.join(portraits)}</div>
             {sub_html}
         </div>

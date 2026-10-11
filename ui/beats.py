@@ -10,6 +10,7 @@ from vn_contracts import CastMember, SceneState
 from providers import BackgroundProvider
 
 from .screens import _cast_panel_html_inner, _vn_screen_html
+from .media import music_url
 
 
 _MARKER_PREFIXES = ("TOOL", "Engine", "CAST-LOCK", "STATE", "ENDSTATE")
@@ -271,7 +272,8 @@ def _render_beats_screen(beats: list[dict], idx: int, scene: SceneState,
                                  choices=None if streaming else scene.choices,
                                  prev_bg_path=prev_bg_path,
                                  waiting=streaming,
-                                 log_text=log_text, cast_html=cast_html)
+                                 log_text=log_text, cast_html=cast_html,
+                                 bgm_url=music_url(getattr(bg_info, "music", "")))
         return screen, bg_info.path, None
 
     idx = max(0, min(idx, len(beats) - 1))
@@ -297,6 +299,7 @@ def _render_beats_screen(beats: list[dict], idx: int, scene: SceneState,
         waiting=waiting,
         log_text=log_text,
         cast_html=cast_html,
+        bgm_url=music_url(getattr(bg_info, "music", "")),
     )
 
     voice_path = beat.get("voice")

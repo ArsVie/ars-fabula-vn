@@ -47,6 +47,13 @@ from vn_contracts import Character, CastMember, STANDARD_EXPRESSIONS
 # the Windows host IP).
 COMFY_HOST = os.getenv("ARS_FABULA_COMFY", "http://127.0.0.1:8188").rstrip("/")
 COMFY_OUTPUT = os.path.expanduser("~/comfy/ComfyUI/output")  # legacy; results now fetched via /view
+
+# Transport for ComfyUI: "http" talks to a running ComfyUI server (Docker/T4
+# Space + local dev — unchanged). "embed" drives ComfyUI's PromptExecutor
+# in-process inside an @spaces.GPU call (ZeroGPU Gradio Space, where a
+# subprocess server can't get a GPU). Same workflow dicts either way — only
+# the four _comfy_* helpers below branch on this. See comfy_embed.py.
+COMFY_MODE = os.getenv("ARS_FABULA_COMFY_MODE", "http").lower()
 PROJECT_DIR = os.path.dirname(__file__)
 CURATED_DIR = os.path.join(PROJECT_DIR, "static", "sprites", "curated")
 GENERATED_DIR = os.path.join(PROJECT_DIR, "static", "sprites", "generated")
@@ -230,7 +237,11 @@ def _face_anchor(identity_or_tags: str) -> str:
 # anime-specific model (e.g. yolov8x6_animeface.pt) here.
 ANIME_FACE_MODEL = "bbox/face_yolov8n.pt"
 
-# How many times to regenerate the base (seed bump) if no anime face is found
+# How many times to regenerate the base (seed bump) if no anime face is found.
+# (face_yolov8n is reliable on this art locally — 200+ trials, 0 misses. The
+# Space's intermittent misses track the embed executor RE-INITIALISING between
+# ZeroGPU calls, not the detector, so the model/threshold are left as-proven;
+# the per-confirm bake split keeps any retries inside one proxy-token window.)
 FACE_GATE_RETRIES = 2
 
 # ── Preset character templates ────────────────────────────────────────
@@ -309,13 +320,13 @@ EXPRESSION_TAGS = {
     # "expressionless" with relaxed brows + closed mouth so it stays flat, not cross.
     "neutral": "expressionless, calm, looking at viewer, relaxed, closed mouth, level eyebrows",
     # SMILE = Passive Contentment (Eyes wide and calm, subtle lip curve)
-    "smile": "gentle smile, parted lips, pleasant expression, calm eyes, looking at viewer, serene",
+    "smile": "gentle smile, pleasant expression, calm eyes, looking at viewer, serene",
     # LAUGH = Dynamic Joy (Eyes naturally squinting/crinkling from a wide, open-mouthed grin)
     "laugh": "joyful laughter, wide open mouth, laughing expression, squinting eyes, crinkling eyes, big happy grin, radiant smile, elevated cheeks",
-    "sad": "sad expression, deep frown, downturned mouth, worried eyebrows, downcast eyes, casting eyes downward, distressed",
+    "sad": "sad expression, crying, teary eyes, trembling lip, frowning, downturned mouth, distressed",
     "angry": "angry glare, slanting v-shaped eyebrows, furrowed brow, gritting teeth, tight jaw, intense eyes, looking at viewer",
     "surprised": "surprised expression, wide-eyed, shocked, shrunken pupils, slightly open gasping mouth, raised elevated eyebrows",
-    "embarrassed": "embarrassed, heavy blush, (@_@), spiral eyes, averted eyes, flying sweatdrops, nervous",
+    "embarrassed": "embarrassed, side glance, heavy blush, (@_@), spiral eyes, averted eyes, nervous, awkward, sweatdrop",
 }
 
 # Per-expression NEGATIVES, appended to the plain NEGATIVE for the
@@ -324,10 +335,12 @@ EXPRESSION_TAGS = {
 # closed-mouth smile, sad as neutral-pleasant, surprised as calm) — without
 # constraining the rest of the set.
 EXPRESSION_NEGATIVE_TAGS = {
+    "smile": "expressionless, neutral mouth, frown, straight mouth",
     "laugh": "closed mouth, expressionless, neutral expression, frown, slight smile",
     "sad": "smile, grin, laughing, happy, cheerful, expressionless",
     "surprised": "smile, expressionless, calm, half-closed eyes, closed eyes, closed mouth",
     "angry": "smile, happy, expressionless, calm",
+    "embarrassed": "confident, bold, composed, staring",
 }
 
 # FaceDetailer strength — the sheet's note: 0.4–0.7, lower = subtler.
@@ -340,6 +353,30 @@ EXPRESSION_DENOISE_OVERRIDES = {
     "laugh": 0.7,
     "sad": 0.68,
     "surprised": 0.7,
+}
+
+# Per-character fine-tuning for the curated promotional trio (marie/yuki/sakura).
+# Exact prompts/settings recovered from the generated expression-sheet metadata —
+# these beat the generic preset for specific (character, expression) pairs.
+# Keyed by character_key; only the listed pairs deviate, everything else uses the
+# defaults above. Custom/generated characters never match, so they're unaffected.
+#   tags:           replaces EXPRESSION_TAGS[expr] (anchor + style still prepended)
+#   negative_extra: appended after EXPRESSION_NEGATIVE_TAGS[expr]
+#   denoise:        replaces the resolved denoise
+CHARACTER_EXPRESSION_OVERRIDES = {
+    "marie": {
+        "smile": {"tags": "smiling, soft gentle smile, upturned lips, "
+                          "warm expression, pleasant eyes, looking at viewer, serene"},
+    },
+    "sakura": {
+        "laugh": {
+            "tags": "joyful laughter, open mouth smile, laughing expression, "
+                    "happy grin, smiling eyes, raised cheeks, cheerful expression",
+            "negative_extra": "deformed eyes, asymmetrical eyes, extra pupils, "
+                              "wonky eyes, lazy eye",
+            "denoise": 0.62,
+        },
+    },
 }
 
 # Model files (must match the names installed in ComfyUI — taken verbatim
@@ -548,6 +585,11 @@ def _comfy_upload(path: str, name: str) -> dict:
     re-uploading the same filename makes ComfyUI save a renamed copy and
     the workflow's LoadImage silently keeps reading the OLD image.
     """
+    if COMFY_MODE == "embed":
+        import comfy_embed
+        dst = os.path.join(comfy_embed.input_dir(), name)
+        shutil.copyfile(path, dst)   # overwrite, like overwrite=true above
+        return {"name": name}
     with open(path, "rb") as f:
         resp = _session().post(
             f"{COMFY_HOST}/upload/image",
@@ -619,6 +661,26 @@ def _comfy_wait(prompt_id: str, timeout: int = 180) -> Optional[dict]:
     return None
 
 
+def _comfy_run(workflow: dict, client_id: str,
+               timeout: int = 180) -> Optional[dict]:
+    """Run a workflow and return its first-image info dict, via whichever
+    transport COMFY_MODE selects. Unifies the http submit+wait pair and the
+    in-process executor so the call sites are transport-agnostic."""
+    try:
+        if COMFY_MODE == "embed":
+            import comfy_embed
+            return comfy_embed.run_workflow(workflow, client_id)
+        pid = _comfy_submit(workflow, client_id)
+        return _comfy_wait(pid, timeout=timeout)
+    except Exception as e:
+        # A transport/connection failure (no server, broken pipe, OOM) must not
+        # crash the casting generator — callers treat None as "generation
+        # failed" and surface a Redo, never a 500.
+        print(f"  [cast] ComfyUI run failed for '{client_id}': "
+              f"{type(e).__name__}: {e}")
+        return None
+
+
 def _comfy_fetch_image(img_info: dict, dest_path: str) -> Optional[str]:
     """Download a generated image from ComfyUI via its /view endpoint.
 
@@ -626,6 +688,16 @@ def _comfy_fetch_image(img_info: dict, dest_path: str) -> Optional[str]:
     breaks whenever ComfyUI lives somewhere else (or SaveImage used a
     subfolder). Works regardless of where/how ComfyUI is installed.
     """
+    # Embed transport already wrote the file to ComfyUI's output dir on disk;
+    # just copy it to the destination the caller expects (no HTTP /view).
+    if COMFY_MODE == "embed":
+        src = img_info.get("_path")
+        if not src or not os.path.exists(src):
+            print(f"  [cast] embed output missing for {img_info}")
+            return None
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        shutil.copyfile(src, dest_path)
+        return dest_path
     try:
         resp = _session().get(
             f"{COMFY_HOST}/view",
@@ -650,6 +722,9 @@ def _comfy_fetch_image(img_info: dict, dest_path: str) -> Optional[str]:
 
 def _comfy_health() -> bool:
     """Check if ComfyUI is reachable (proxy-bypassing, like all other calls)."""
+    if COMFY_MODE == "embed":
+        import comfy_embed
+        return comfy_embed.health()
     try:
         return _session().get(f"{COMFY_HOST}/system_stats", timeout=3).ok
     except Exception:
@@ -663,6 +738,10 @@ def comfy_free_vram() -> bool:
     ComfyUI reloads its models lazily on the next /prompt, so this is safe
     to call between casting beats. No-op if ComfyUI isn't reachable.
     """
+    # Embed mode: ZeroGPU grants/reclaims the GPU per @spaces.GPU call, so
+    # there is no resident server holding VRAM to free between beats.
+    if COMFY_MODE == "embed":
+        return False
     try:
         r = _session().post(f"{COMFY_HOST}/free",
                             json={"unload_models": True, "free_memory": True},
@@ -707,8 +786,7 @@ def _generate_base(character_key: str, preset: dict, out_dir: str,
         "45": {"inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}, "class_type": "CLIPLoader"},
     }
 
-    pid = _comfy_submit(workflow, f"base_{character_key}")
-    result = _comfy_wait(pid)
+    result = _comfy_run(workflow, f"base_{character_key}")
     if result and _comfy_fetch_image(result, out_path):
         print(f"  [cast] Generated base for {character_key} (seed={seed}): {out_path}")
         return out_path
@@ -750,12 +828,11 @@ def _detect_anime_face(base_path: str, character_key: str) -> Optional[bool]:
     }
 
     try:
-        pid = _comfy_submit(workflow, f"facegate_{character_key}")
+        result = _comfy_run(workflow, f"facegate_{character_key}", timeout=60)
     except Exception as e:
         print(f"  [cast] Face gate unavailable ({e}); proceeding without gate")
         return None
 
-    result = _comfy_wait(pid, timeout=60)
     if not result:
         print(f"  [cast] Face gate produced no output; proceeding without gate")
         return None
@@ -819,29 +896,49 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
         return out_path
 
     _comfy_upload(base_path, f"{character_key}_base.png")
+    workflow, out_path, client_id = _build_expression_workflow(
+        character_key, expr_name, expr_tags, seed, anchor)
+    result = _comfy_run(workflow, client_id, timeout=200)
+    if result and _comfy_fetch_image(result, out_path):
+        return out_path
+    return None
 
+
+def _build_expression_workflow(character_key: str, expr_name: str,
+                               expr_tags: str, seed: int, anchor: str = ""):
+    """Build the FaceDetailer workflow for ONE expression — no upload, no run.
+
+    Returns (workflow, out_path, client_id). The base must already be uploaded
+    as f"{character_key}_base.png". Split out from _generate_expression so a
+    whole character's expression set can be assembled and run in a single
+    @spaces.GPU batch (see _bake_expressions)."""
+    out_path = os.path.join(_char_dir(character_key),
+                            f"{character_key}_{expr_name}.png")
     anchor_part = f"{anchor}, " if anchor else ""
+
+    # Per-character fine-tuning override (curated trio): swap tags / add extra
+    # negatives / change denoise for specific (character, expression) pairs.
+    ov = CHARACTER_EXPRESSION_OVERRIDES.get(character_key, {}).get(expr_name, {})
+    if ov.get("tags"):
+        expr_tags = ov["tags"]
     expr_prompt = f"{QUALITY}, {STYLE_TAGS}. {anchor_part}{expr_tags}"
 
     # Per-expression strength + negatives (see EXPRESSION_DENOISE_OVERRIDES /
     # EXPRESSION_NEGATIVE_TAGS): big-delta expressions inpaint harder and
     # negate their drift-back-to-calm failure mode.
-    denoise = EXPRESSION_DENOISE_OVERRIDES.get(expr_name, EXPRESSION_DENOISE)
-    expr_negative = NEGATIVE
-    if expr_name in EXPRESSION_NEGATIVE_TAGS:
-        expr_negative = f"{NEGATIVE}, {EXPRESSION_NEGATIVE_TAGS[expr_name]}"
+    denoise = ov.get("denoise",
+                     EXPRESSION_DENOISE_OVERRIDES.get(expr_name, EXPRESSION_DENOISE))
+    neg_extra = [t for t in (EXPRESSION_NEGATIVE_TAGS.get(expr_name),
+                             ov.get("negative_extra")) if t]
+    expr_negative = f"{NEGATIVE}, {', '.join(neg_extra)}" if neg_extra else NEGATIVE
 
-    # FaceDetailer inputs — unified across all modes (see the module-level
-    # comment above; only base resolution differs per mode).
-    # Unified FaceDetailer params from the validated expression sheet.
-    # Lighter than the old heavier config (guide_size 384→256, steps 20→15,
-    # dpm_2_ancestral→euler) with no quality loss. bbox_threshold 0.5 catches
-    # expressions reliably (was 0.3 with more dilation/crop to compensate).
+    # Unified FaceDetailer params from the validated expression sheet (er_sde,
+    # 15 steps, guide_size 256, bbox_threshold 0.5).
     _fd_inputs = {
         "image": ["10", 0], "model": ["44", 0], "clip": ["45", 0], "vae": ["15", 0],
         "guide_size": 256, "guide_size_for": True, "max_size": 384,
         "seed": seed, "steps": 15, "cfg": 4.0,
-        "sampler_name": "euler", "scheduler": SCHEDULER,
+        "sampler_name": "er_sde", "scheduler": SCHEDULER,
         "positive": ["11", 0], "negative": ["12", 0],
         "denoise": denoise, "feather": 15,
         "noise_mask": True, "force_inpaint": True,
@@ -866,12 +963,51 @@ def _generate_expression(base_path: str, character_key: str, expr_name: str,
         "80": {"inputs": _fd_inputs, "class_type": "FaceDetailer"},
         "1": {"inputs": {"filename_prefix": f"{character_key}_{expr_name}", "images": ["80", 0]}, "class_type": "SaveImage"},
     }
+    return workflow, out_path, f"{character_key}_{expr_name}_{seed}"
 
-    pid = _comfy_submit(workflow, f"{character_key}_{expr_name}_{seed}")
-    result = _comfy_wait(pid, timeout=200)
-    if result and _comfy_fetch_image(result, out_path):
-        return out_path
-    return None
+
+def _bake_expressions(base_path: str, character_key: str, preset: dict,
+                      anchor: str = "") -> None:
+    """Bake the full STANDARD_EXPRESSIONS set for one character.
+
+    In embed mode the non-neutral expressions run in ONE @spaces.GPU batch:
+    ComfyUI loads the models once (its CLASSIC cache reuses the identical
+    loader nodes across the batch) and we pay the ZeroGPU allocation overhead
+    once instead of per image. In http mode (Docker/local) it keeps the
+    sequential per-expression path. Single-expression failures self-heal via
+    _generate_expression_retry. Shared model loads make all the difference on
+    ZeroGPU, where each separate GPU call costs ~tens of seconds of attach."""
+    seed = preset["seed"]
+    out_dir = _char_dir(character_key)
+    os.makedirs(out_dir, exist_ok=True)
+    nonneutral = [e for e in STANDARD_EXPRESSIONS if e != "neutral"]
+
+    # neutral == the base itself, copied through (identity-preserving)
+    if "neutral" in STANDARD_EXPRESSIONS:
+        shutil.copy2(base_path,
+                     os.path.join(out_dir, f"{character_key}_neutral.png"))
+
+    if COMFY_MODE != "embed":
+        for e in nonneutral:
+            path = _generate_expression_retry(base_path, character_key, e,
+                                              EXPRESSION_TAGS[e], seed, anchor=anchor)
+            print(f"    {e}: {'OK' if path else 'FAILED'}")
+        return
+
+    import comfy_embed
+    _comfy_upload(base_path, f"{character_key}_base.png")   # once for the batch
+    jobs = [(e,) + _build_expression_workflow(
+                character_key, e, EXPRESSION_TAGS[e], seed, anchor)
+            for e in nonneutral]
+    print(f"    batching {len(jobs)} expressions in one GPU call…")
+    infos = comfy_embed.run_batch([(wf, cid) for (_e, wf, _out, cid) in jobs])
+    for (e, _wf, outp, _cid), info in zip(jobs, infos):
+        ok = bool(info) and bool(_comfy_fetch_image(info, outp))
+        if not ok:
+            # self-heal a single miss without re-running the whole batch
+            ok = bool(_generate_expression_retry(
+                base_path, character_key, e, EXPRESSION_TAGS[e], seed, anchor=anchor))
+        print(f"    {e}: {'OK' if ok else 'FAILED'}")
 
 
 # Per-expression retry count on failure (bumped seed). 0 = no retry.
@@ -1270,10 +1406,28 @@ def _generate_via_comfy(specs: list[tuple[str, dict]]) -> list[CastMember]:
     return cast
 
 
+def _placeholder_marker(key: str) -> str:
+    """Sentinel that flags a sprite set as containing placeholder art."""
+    return os.path.join(_char_dir(key), ".placeholder")
+
+
+def _clear_placeholder_marker(key: str) -> None:
+    try:
+        os.remove(_placeholder_marker(key))
+    except OSError:
+        pass
+
+
 def _generated_complete(key: str) -> bool:
-    """True if a full generated sprite set already exists on disk
-    (for the current mode — fast and full are cached separately)."""
+    """True if a full, REAL generated sprite set already exists on disk
+    (for the current mode — fast and full are cached separately).
+
+    A set that fell back to placeholder boxes (e.g. a ZeroGPU-quota-throttled
+    bake) is not a reusable cache: the .placeholder marker forces a re-bake
+    next time rather than serving those boxes forever."""
     char_dir = _char_dir(key)
+    if os.path.exists(_placeholder_marker(key)):
+        return False
     return all(os.path.exists(os.path.join(char_dir, f"{key}_{e}.png"))
                for e in STANDARD_EXPRESSIONS)
 
@@ -1300,13 +1454,22 @@ def _generate_one_via_comfy(key: str, preset: dict, base_path: str = None) -> Ca
     expressions baked from it. The base is copied into the char dir if
     it isn't already there.
     """
-    if _generated_complete(key) and not os.getenv("ARS_FABULA_REGEN"):
+    # A freshly face-gated base (interactive Generate/Confirm) must drive a
+    # re-bake — never silently reuse a stale cached set that doesn't match the
+    # character the user just reviewed. Cross-session reuse still applies on the
+    # curated/preset path, where no fresh base is supplied.
+    have_fresh_base = bool(base_path and os.path.exists(base_path))
+    if (_generated_complete(key) and not os.getenv("ARS_FABULA_REGEN")
+            and not have_fresh_base):
         print(f"  [cast] Reusing generated sprites for {key} "
               f"(delete {_char_dir(key)}/ or set ARS_FABULA_REGEN=1 to re-bake)")
         return _load_generated_member(key, preset)
 
     char_dir = _char_dir(key)
     os.makedirs(char_dir, exist_ok=True)
+    # Starting a real bake — drop any stale placeholder marker; a failed
+    # expression below re-sets it via _make_placeholder_sprite.
+    _clear_placeholder_marker(key)
 
     # Step 1: Generate base (face-gated) — skipped if base_path provided and exists
     if base_path and os.path.exists(base_path):
@@ -1324,12 +1487,7 @@ def _generate_one_via_comfy(key: str, preset: dict, base_path: str = None) -> Ca
     # The eye/hair anchor keeps those traits from drifting across the set.
     anchor = _face_anchor(preset.get("identity_prompt", ""))
     print(f"  [cast] Generating expressions for {key} (anchor: {anchor or 'none'})...")
-    for expr_name in STANDARD_EXPRESSIONS:
-        tags = EXPRESSION_TAGS[expr_name]
-        expr_path = _generate_expression_retry(base_path, key, expr_name,
-                                               tags, preset["seed"], anchor=anchor)
-        status = "OK" if expr_path else "FAILED"
-        print(f"    {expr_name}: {status}")
+    _bake_expressions(base_path, key, preset, anchor=anchor)
 
     # Step 3: Remove backgrounds (isnet-anime matte)
     print(f"  [cast] Removing backgrounds for {key}...")
@@ -1407,6 +1565,12 @@ def _make_placeholder_sprite(char_key: str, expr: str, member: CastMember) -> Op
         draw.text((member.sprite_width // 2, member.sprite_height // 2),
                   f"{char_key}\n{expr}", fill=(255, 255, 255, 255), anchor="mm")
         img.save(path)
+        # Taint the set so _generated_complete won't reuse these boxes as a
+        # real cache on a later run.
+        try:
+            open(_placeholder_marker(char_key), "w").close()
+        except OSError:
+            pass
         return path
     except ImportError:
         return None

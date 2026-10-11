@@ -38,3 +38,26 @@ cast_report.md
 *:Avecto.Zone.Identifier
 *.bak
 data/
+
+# Local dev artifacts (not for Space deployment)
+.venv-convert/
+runs/
+next_session.md
+CLAUDE.md
+FIELD_NOTES.md
+tools/_*.sh
+tools/_*.py
+tools/ab_local_eval.py
+
+# Sprite/expression experimentation scratch (not for Space deployment)
+test_outputs/
+/_*.py
+/HANDOFF_*.md
+/HANDOFF-*.md
+
+# Fine-tuning / training tooling (not for Space deployment)
+tools/build_train_v2.py
+tools/repetition_metrics.py
+tools/reprompt_dataset.py
+tools/resume_watcher.py
+tools/score_forgetting.py

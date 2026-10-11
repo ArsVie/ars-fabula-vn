@@ -19,6 +19,21 @@ Run with:
 from __future__ import annotations
 import os
 
+# ── Hugging Face Spaces / ZeroGPU ──────────────────────────────────────
+# SPACE_ID is set by the Spaces runtime. Two Space flavours share this file:
+#   • Docker/T4 Space — the Dockerfile sets ARS_FABULA_BACKEND=server and
+#     ARS_FABULA_COMFY_MODE stays "http" (a real ComfyUI subprocess runs).
+#   • ZeroGPU Gradio Space — backend defaults to transformers below; a
+#     subprocess can't hold a GPU here, so we drive ComfyUI in-process via
+#     the "embed" transport (@spaces.GPU). See comfy_embed.py.
+ON_SPACES = bool(os.getenv("SPACE_ID"))
+if ON_SPACES:
+    os.environ.setdefault("ARS_FABULA_BACKEND", "transformers")
+    if os.environ["ARS_FABULA_BACKEND"] == "transformers":
+        # ZeroGPU path: live cast + live novel backgrounds, both in-process.
+        os.environ.setdefault("ARS_FABULA_COMFY_MODE", "embed")
+        os.environ.setdefault("ARS_FABULA_BG", "comfyui")
+
 import gradio as gr
 
 from providers import get_background_provider
@@ -264,13 +279,32 @@ if __name__ == "__main__":
         except ValueError:
             pass
 
+    if ON_SPACES:
+        # ZeroGPU wants the model loaded (and placed on cuda, under its
+        # emulation layer) at startup, not lazily inside a request.
+        from model_client import preload_transformers
+        preload_transformers()
+        # Embed mode has no Dockerfile to bake the diffusion weights in — stage
+        # them now (idempotent) so the first cast bake doesn't stall on a
+        # multi-GB download mid-@spaces.GPU.
+        if os.getenv("ARS_FABULA_COMFY_MODE") == "embed":
+            try:
+                import comfy_embed
+                comfy_embed.stage_comfyui()   # clone ComfyUI source (submodules
+                                              # don't materialise via hf upload)
+                comfy_embed.stage_models()    # download the diffusion weights
+            except Exception as e:
+                print(f"[space] comfy staging failed ({e}); "
+                      f"cast will fall back to curated")
+        port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
+
     app = create_ui()
     print(f"\n🌸 Ars-Fabula VN starting on http://127.0.0.1:{port}")
     print(f"   Mock mode: {os.getenv('ARS_FABULA_BACKEND', 'server') == 'mock'}")
     print(f"   Voice: {os.getenv('ARS_FABULA_VOICE', 'mock')} · "
           f"BG: {os.getenv('ARS_FABULA_BG', 'preset')}\n")
     app.launch(
-        server_name="127.0.0.1",
+        server_name="0.0.0.0" if ON_SPACES else "127.0.0.1",
         server_port=port,
         allowed_paths=[STATIC_DIR],   # belt-and-braces; images are data URIs anyway
         css=CSS,                      # Gradio 6: css/js/theme live on launch()
@@ -279,6 +313,14 @@ if __name__ == "__main__":
             primary_hue="amber",
             neutral_hue="slate",
         ),
+        # CSR, never SSR. Gradio's CSS auto-prefixer boosts every custom rule's
+        # specificity with a `.gradio-container…contain` prefix ONLY in CSR; in
+        # SSR (which HF Spaces enables by default) that prefix is absent, so the
+        # app's own selectors (e.g. .vn-title-main) lose the cascade to Gradio's
+        # component CSS (.prose *, button) and every gold accent silently drops
+        # to the neutral theme colour. Forcing CSR makes the Space render
+        # identically to local. Harmless locally (local already runs CSR).
+        ssr_mode=False,
         quiet=False,
         share=False,
     )

@@ -4,10 +4,16 @@ model_client.py — the model-independence layer.
 The engine depends on the `ModelClient` interface, never on a concrete model or URL.
 Swap models by changing env vars; run tests with no server via MockModel.
 
-  ARS_FABULA_BACKEND  = "server" | "mock"   (default: server)
+  ARS_FABULA_BACKEND  = "server" | "transformers" | "mock"   (default: server)
   ARS_FABULA_BASE_URL = "http://localhost:8110/v1"
   ARS_FABULA_MODEL    = "gemma-12b"  (later: "gemma-26b-a4b", "gemma-31b")
+                        for the transformers backend: a HF repo id,
+                        e.g. "google/gemma-3-4b-it"
   ARS_FABULA_API_KEY  = "not-needed"
+
+The "transformers" backend runs the model in-process — built for Hugging
+Face Spaces / ZeroGPU, where external servers (llama-server, ComfyUI)
+cannot hold a GPU. GPU time is only granted inside @spaces.GPU calls.
 """
 from __future__ import annotations
 import os
@@ -194,6 +200,185 @@ class LlamaServerClient(ModelClient):
         return self.cfg.model
 
 
+# ── Transformers backend: in-process model (HF Spaces / ZeroGPU) ────────
+#
+# On ZeroGPU the model must be loaded and placed on "cuda" at startup
+# (a CUDA emulation layer makes that legal outside @spaces.GPU); the real
+# GPU only exists inside the @spaces.GPU-decorated generate call. The
+# decorator is a no-op off-Spaces, so the same code path runs anywhere
+# torch + transformers are installed.
+
+# HF repo ids tried in order when ARS_FABULA_MODEL isn't itself a repo id.
+# First choice is Gemma 4 12B in bf16 (~24GB — fits both the Space's 50GB
+# ephemeral disk and the 48GB ZeroGPU slice; the VN was originally tuned
+# against gemma-12b locally). The 26B-A4B MoE the dev box runs is NOT
+# viable on ZeroGPU: its transformers-format repos are unquantized bf16
+# (~52GB > the 50GB disk) and no transformers-loadable 4-bit repo exists —
+# the 26B path is the Docker/T4 Space (llama.cpp GGUF), not this one.
+# Gemma repos are license-gated: the Space needs an HF_TOKEN secret from
+# an account that accepted the license, else we fall through to an
+# ungated small model rather than dropping the whole demo to mock.
+_HF_MODEL_CANDIDATES = [
+    ("google/gemma-4-12b-it", ""),
+    ("google/gemma-3-4b-it", ""),
+    ("Qwen/Qwen3-4B-Instruct-2507", ""),
+]
+
+_HF_STATE: dict = {"model": None, "tokenizer": None, "id": None}
+
+try:
+    import spaces as _spaces
+    _gpu_decorator = _spaces.GPU(duration=120)
+except ImportError:
+    _gpu_decorator = lambda f: f
+
+
+def _hf_load(model_id: Optional[str] = None):
+    """Load the chat model once, module-wide. Returns the loaded repo id
+    or None if nothing could be loaded (no torch, gated repo, etc.)."""
+    if _HF_STATE["model"] is not None:
+        return _HF_STATE["id"]
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as e:
+        print(f"[hf] transformers backend unavailable ({e})")
+        return None
+
+    if model_id and "/" in model_id:
+        candidates = [(model_id, os.getenv("ARS_FABULA_QUANT", "4bit"))]
+    else:
+        candidates = list(_HF_MODEL_CANDIDATES)
+    for mid, quant in candidates:
+        try:
+            print(f"[hf] loading {mid}" + (f" ({quant})" if quant else "") + "…")
+            tok = AutoTokenizer.from_pretrained(mid)
+            kwargs: dict = {"dtype": torch.bfloat16}
+            if quant == "4bit" and torch.cuda.is_available():
+                from transformers import BitsAndBytesConfig
+                kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_quant_type="nf4",
+                )
+                kwargs["device_map"] = "cuda"
+            model = AutoModelForCausalLM.from_pretrained(mid, **kwargs)
+            if "device_map" not in kwargs and torch.cuda.is_available():
+                model = model.to("cuda")
+            model.eval()
+            _HF_STATE.update(model=model, tokenizer=tok, id=mid)
+            print(f"[hf] {mid} ready on {model.device}")
+            return mid
+        except Exception as e:
+            print(f"[hf] could not load {mid}: {type(e).__name__}: {e}")
+    return None
+
+
+@_gpu_decorator
+def _hf_generate(messages: list[dict], max_new_tokens: int,
+                 temperature: float) -> str:
+    import torch
+    tok, model = _HF_STATE["tokenizer"], _HF_STATE["model"]
+    inputs = tok.apply_chat_template(
+        messages, add_generation_prompt=True,
+        return_tensors="pt", return_dict=True,
+    ).to(model.device)
+    with torch.inference_mode():
+        out = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=temperature > 0,
+            temperature=max(temperature, 1e-3),
+            top_p=0.95,
+        )
+    return tok.decode(out[0][inputs["input_ids"].shape[-1]:],
+                      skip_special_tokens=True)
+
+
+def _hf_generate_worker(model, gen_kwargs):
+    """Run model.generate in a background thread (feeds a TextIteratorStreamer).
+    Kept module-level so the @spaces.GPU generator below can spawn it."""
+    import torch
+    with torch.inference_mode():
+        model.generate(**gen_kwargs)
+
+
+@_gpu_decorator
+def _hf_stream_generate(messages: list[dict], max_new_tokens: int,
+                        temperature: float):
+    """Yield text deltas token-by-token. The whole iteration runs inside ONE
+    @spaces.GPU allocation (ZeroGPU holds the GPU for a generator's lifetime),
+    so generate() in the worker thread and our decoding overlap — the engine's
+    line-buffered stream parser turns the deltas into live beats. The previous
+    behaviour (base ModelClient.stream → one giant chunk at the end) made every
+    ZeroGPU turn feel like a long stall; this restores local-style streaming."""
+    import torch  # noqa: F401  (ensures torch is importable before generate)
+    from threading import Thread
+    from transformers import TextIteratorStreamer
+    tok, model = _HF_STATE["tokenizer"], _HF_STATE["model"]
+    inputs = tok.apply_chat_template(
+        messages, add_generation_prompt=True,
+        return_tensors="pt", return_dict=True,
+    ).to(model.device)
+    streamer = TextIteratorStreamer(tok, skip_prompt=True,
+                                    skip_special_tokens=True)
+    gen_kwargs = dict(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=temperature > 0,
+        temperature=max(temperature, 1e-3),
+        top_p=0.95,
+        streamer=streamer,
+    )
+    thread = Thread(target=_hf_generate_worker, args=(model, gen_kwargs))
+    thread.start()
+    for delta in streamer:
+        if delta:
+            yield delta
+    thread.join()
+
+
+class TransformersClient(ModelClient):
+    """In-process HF transformers chat model (the ZeroGPU path)."""
+
+    def __init__(self, config: Optional[ModelConfig] = None):
+        self.cfg = config or ModelConfig.from_env()
+        self._loaded_id = _hf_load(self.cfg.model)
+
+    def chat(self, messages, tools=None, **kw) -> dict:
+        if not self.health():
+            raise RuntimeError("transformers backend has no loaded model")
+        text = _hf_generate(
+            messages,
+            max_new_tokens=kw.get("max_tokens", self.cfg.max_tokens),
+            temperature=kw.get("temperature", self.cfg.temperature),
+        )
+        return {"role": "assistant", "content": text}
+
+    def stream(self, messages, tools=None, **kw) -> Iterator[str]:
+        """Token-by-token streaming (overrides the base one-chunk fallback).
+        Used by the engine's run_turn_stream for every interactive turn."""
+        if not self.health():
+            raise RuntimeError("transformers backend has no loaded model")
+        yield from _hf_stream_generate(
+            messages,
+            max_new_tokens=kw.get("max_tokens", self.cfg.max_tokens),
+            temperature=kw.get("temperature", self.cfg.temperature),
+        )
+
+    def health(self) -> bool:
+        return _HF_STATE["model"] is not None
+
+
+def preload_transformers() -> bool:
+    """Warm the in-process model at app startup (ZeroGPU wants the CUDA
+    placement done at module/startup time, not lazily mid-request)."""
+    cfg = ModelConfig.from_env()
+    if cfg.backend != "transformers":
+        return False
+    return _hf_load(cfg.model) is not None
+
+
 # ── Mock backend: scripted, no server (for unit/CI tests) ───────────────
 
 class MockModel(ModelClient):
@@ -243,6 +428,8 @@ def get_model(config: Optional[ModelConfig] = None) -> ModelClient:
     cfg = config or ModelConfig.from_env()
     if cfg.backend == "mock":
         return MockModel()
+    if cfg.backend == "transformers":
+        return TransformersClient(cfg)
     return LlamaServerClient(cfg)
 
 
@@ -343,7 +530,10 @@ def _win_health(cfg: ModelConfig) -> bool:
 def release_vram(config: Optional[ModelConfig] = None) -> bool:
     """Stop/evict the LLM so ComfyUI can load. Returns True if it acted."""
     cfg = config or ModelConfig.from_env()
-    if cfg.backend == "mock":
+    # mock has nothing to stop; transformers is in-process — on ZeroGPU the
+    # GPU is granted per-call and released automatically, so the whole
+    # stop/relaunch swap dance does not apply.
+    if cfg.backend in ("mock", "transformers"):
         return False
     mode = _llm_manage_mode(cfg)
     if mode == "none":
@@ -417,6 +607,9 @@ def ensure_llm(config: Optional[ModelConfig] = None, timeout: int = 300) -> bool
     cfg = config or ModelConfig.from_env()
     if cfg.backend == "mock":
         return False
+    if cfg.backend == "transformers":
+        # In-process model: there is no server to relaunch or poll.
+        return _HF_STATE["model"] is not None or preload_transformers()
     if _win_health(cfg):
         return True
 
