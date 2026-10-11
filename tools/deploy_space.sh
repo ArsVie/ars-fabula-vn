@@ -28,10 +28,11 @@ else
     hf repos create "$SPACE_ID" --type space --space-sdk gradio --exist-ok
 fi
 
-# The sdk lives in README front-matter: the root README is the Docker/T4
-# variant; .space-zerogpu/README.md is the Gradio/ZeroGPU one. For zerogpu,
-# keep the root README out of the tree upload and push the variant over it.
-EXTRA_EXCLUDES=()
+# The sdk lives in the Space card's README front-matter. The root README is
+# the GitHub README, so it never goes up: .space-docker/README.md is the
+# Docker/T4 card and .space-zerogpu/README.md is the Gradio/ZeroGPU one. The
+# tree upload skips the root README and the matching card is pushed over it.
+EXTRA_EXCLUDES=(--exclude "README.md")
 if [ "$MODE" = "zerogpu" ]; then
     # third_party/ holds the ComfyUI submodules; hf upload can't materialise
     # submodule contents in a Gradio Space's runtime checkout, so we DON'T
@@ -67,7 +68,7 @@ hf upload "$SPACE_ID" . . --type space \
   --exclude "CLAUDE.md" \
   --exclude "FIELD_NOTES.md" \
   --exclude "next_session.md" \
-  --exclude "_gen_sprites.py" \
+  --exclude "tools/gen_curated_sprites.py" \
   --exclude "static/sprites/_sampler_test/*" \
   --exclude "static/sprites/generated/*" \
   --exclude "static/voice/*" \
@@ -78,6 +79,9 @@ hf upload "$SPACE_ID" . . --type space \
 if [ "$MODE" = "zerogpu" ]; then
     hf upload "$SPACE_ID" .space-zerogpu/README.md README.md --type space \
         --commit-message "ZeroGPU variant README (sdk: gradio)"
+else
+    hf upload "$SPACE_ID" .space-docker/README.md README.md --type space \
+        --commit-message "Docker variant README (sdk: docker)"
 fi
 
 echo "── done: https://huggingface.co/spaces/${SPACE_ID}"
